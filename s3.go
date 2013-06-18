@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"strconv"
+	"time"
 )
 
 type service string
@@ -83,9 +84,54 @@ func writeISE(w http.ResponseWriter, message string) {
 	}
 }
 
+type Auth struct {
+	AccessKey, SecretKey string
+}
+
+// ValidBucketName returns whether name is a valid bucket name.
+// Here are the rules, from:
+// http://docs.amazonwebservices.com/AmazonS3/2006-03-01/dev/BucketRestrictions.html
+//
+// Can contain lowercase letters, numbers, periods (.), underscores (_),
+// and dashes (-). You can use uppercase letters for buckets only in the
+// US Standard region.
+//
+// Must start with a number or letter
+//
+// Must be between 3 and 255 characters long
+//
+// There's one extra rule (Must not be formatted as an IP address (e.g., 192.168.5.4)
+// but the real S3 server does not seem to check that rule, so we will not
+// check it either.
+//
+func ValidBucketName(name string) bool {
+	if len(name) < 3 || len(name) > 255 {
+		return false
+	}
+	r := name[0]
+	if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z') {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'z':
+		case r == '_' || r == '-':
+		case r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func getOwner(r *http.Request) Owner {
+	return Owner{Id: "0", Name: "Anonymous"}
+}
+
 //This implementation of the GET operation returns a list of all buckets owned by the authenticated sender of the request.
 func serviceGet(w http.ResponseWriter, r *http.Request) {
-	owner, buckets, err := backing.ListBuckets()
+	owner, buckets, err := backing.ListBuckets(getOwner(r))
 	if err != nil {
 		writeISE(w, err.Error())
 		return
@@ -96,8 +142,9 @@ func serviceGet(w http.ResponseWriter, r *http.Request) {
 <ListAllMyBucketsResult xmlns="http://doc.s3.amazonaws.com/2006-03-01">
   <Owner><ID>` + owner.Id + "</ID><DisplayName>" + owner.Name + "</DisplayName></Owner><Buckets>")
 	for _, bucket := range buckets {
-		bw.WriteString("<Bucket><Name>" + bucket + "</Name></Bucket>")
-		//<CreationDate>2006-02-03T16:45:09.000Z</CreationDate>
+		bw.WriteString("<Bucket><Name>" + bucket.Name + "</Name>")
+		bw.WriteString("<CreationDate>" + bucket.Created.Format(time.RFC3339) +
+			"</CreationDate></Bucket>")
 	}
 	bw.WriteString("</Buckets></ListAllMyBucketsResult>")
 	bw.Flush()
@@ -107,7 +154,7 @@ func serviceGet(w http.ResponseWriter, r *http.Request) {
 //All objects (including all object versions and Delete Markers) in the bucket
 //must be deleted before the bucket itself can be deleted.
 func (bucket bucketHandler) del(w http.ResponseWriter, r *http.Request) {
-	if err := backing.DeleteBucket(string(bucket)); err != nil {
+	if err := backing.DelBucket(getOwner(r), string(bucket)); err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -141,7 +188,7 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	prefix := r.Form.Get("prefix")
 
-	objects, commonprefixes, truncated, err := backing.ListObjects(
+	objects, commonprefixes, truncated, err := backing.List(getOwner(r),
 		string(bucket), prefix, delimiter, marker, limit)
 	if err != nil {
 		if err == NotFound {
@@ -180,6 +227,12 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 //The operation returns a 200 OK if the bucket exists and you have permission to access it.
 //Otherwise, the operation might return responses such as 404 Not Found and 403 Forbidden.
 func (bucket bucketHandler) check(w http.ResponseWriter, r *http.Request) {
+	if backing.CheckBucket(getOwner(r), string(bucket)) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	w.WriteHeader(http.StatusNotFound)
+	return
 }
 
 //This implementation of the PUT operation creates a new bucket.
@@ -189,10 +242,16 @@ func (bucket bucketHandler) check(w http.ResponseWriter, r *http.Request) {
 //Not every string is an acceptable bucket name. For information on bucket naming restrictions, see Working with Amazon S3 Buckets.
 //DNS name constraints -> max length is 63
 func (bucket bucketHandler) put(w http.ResponseWriter, r *http.Request) {
+	if err := backing.CreateBucket(getOwner(r), string(bucket)); err != nil {
+		writeISE(w, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	return
 }
 
 func (obj objectHandler) del(w http.ResponseWriter, r *http.Request) {
-	if err := backing.DeleteObject(obj.bucket, obj.object); err != nil {
+	if err := backing.Del(getOwner(r), obj.bucket, obj.object); err != nil {
 		writeISE(w, fmt.Sprintf("error deleting %s/%s: %s", obj.bucket, obj.object, err))
 		return
 	}
@@ -200,7 +259,7 @@ func (obj objectHandler) del(w http.ResponseWriter, r *http.Request) {
 }
 
 func (obj objectHandler) get(w http.ResponseWriter, r *http.Request) {
-	fn, media, body, err := backing.GetObject(obj.bucket, obj.object)
+	fn, media, body, err := backing.Get(getOwner(r), obj.bucket, obj.object)
 	if err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
@@ -254,7 +313,7 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 	}
 	// Content-MD5 ?
 
-	if err := backing.PutObject(obj.bucket, obj.object, fn, media, body); err != nil {
+	if err := backing.Put(getOwner(r), obj.bucket, obj.object, fn, media, body); err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
