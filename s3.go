@@ -1,3 +1,20 @@
+/*
+Package s3weed tries to provide an S3 compatible server backed by weed-fs
+
+Copyright 2013 Tamás Gulácsi
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 package s3weed
 
 import (
@@ -13,6 +30,10 @@ import (
 
 type service string
 
+func (s service) Host() string {
+	return string(s)
+}
+
 func (host service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.RequestURI == "*" {
 		writeBadRequest(w, "bad URI")
@@ -27,14 +48,18 @@ func (host service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bucketHandler(r.Host[:len(r.Host)-len(string(host))-1]).ServeHTTP(w, r)
+	bucketHandler{Name: r.Host[:len(r.Host)-len(string(host))-1],
+		Service: host}.ServeHTTP(w, r)
 }
 
-type bucketHandler string
+type bucketHandler struct {
+	Name    string
+	Service service
+}
 
 func (bucket bucketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "" || r.Method == "POST" {
-		objectHandler{string(bucket), r.URL.Path}.ServeHTTP(w, r)
+		objectHandler{Bucket: bucket, object: r.URL.Path}.ServeHTTP(w, r)
 		return
 	}
 	switch r.Method {
@@ -52,7 +77,8 @@ func (bucket bucketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type objectHandler struct {
-	bucket, object string
+	Bucket bucketHandler
+	object string
 }
 
 func (obj objectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -82,10 +108,6 @@ func writeISE(w http.ResponseWriter, message string) {
 	if message != "" {
 		w.Write([]byte(message))
 	}
-}
-
-type Auth struct {
-	AccessKey, SecretKey string
 }
 
 // ValidBucketName returns whether name is a valid bucket name.
@@ -125,13 +147,12 @@ func ValidBucketName(name string) bool {
 	return true
 }
 
-func getOwner(r *http.Request) Owner {
-	return Owner{Id: "0", Name: "Anonymous"}
-}
-
 //This implementation of the GET operation returns a list of all buckets owned by the authenticated sender of the request.
 func serviceGet(w http.ResponseWriter, r *http.Request) {
-	owner, buckets, err := backing.ListBuckets(getOwner(r))
+	owner, err := getOwner(r, "")
+	if err != nil {
+	}
+	owner, buckets, err := backing.ListBuckets(owner)
 	if err != nil {
 		writeISE(w, err.Error())
 		return
@@ -140,7 +161,7 @@ func serviceGet(w http.ResponseWriter, r *http.Request) {
 	bw := bufio.NewWriter(w)
 	bw.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <ListAllMyBucketsResult xmlns="http://doc.s3.amazonaws.com/2006-03-01">
-  <Owner><ID>` + owner.Id + "</ID><DisplayName>" + owner.Name + "</DisplayName></Owner><Buckets>")
+  <Owner><ID>` + owner.ID() + "</ID><DisplayName>" + owner.Name() + "</DisplayName></Owner><Buckets>")
 	for _, bucket := range buckets {
 		bw.WriteString("<Bucket><Name>" + bucket.Name + "</Name>")
 		bw.WriteString("<CreationDate>" + bucket.Created.Format(time.RFC3339) +
@@ -154,7 +175,11 @@ func serviceGet(w http.ResponseWriter, r *http.Request) {
 //All objects (including all object versions and Delete Markers) in the bucket
 //must be deleted before the bucket itself can be deleted.
 func (bucket bucketHandler) del(w http.ResponseWriter, r *http.Request) {
-	if err := backing.DelBucket(getOwner(r), string(bucket)); err != nil {
+	owner, err := getOwner(r, string(bucket.Service))
+	if err != nil {
+		return
+	}
+	if err := backing.DelBucket(owner, bucket.Name); err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -188,8 +213,12 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	prefix := r.Form.Get("prefix")
 
-	objects, commonprefixes, truncated, err := backing.List(getOwner(r),
-		string(bucket), prefix, delimiter, marker, limit)
+	owner, err := getOwner(r, string(bucket.Service))
+	if err != nil {
+		return
+	}
+	objects, commonprefixes, truncated, err := backing.List(owner,
+		bucket.Name, prefix, delimiter, marker, limit)
 	if err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
@@ -207,13 +236,13 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 	bw := bufio.NewWriter(w)
 	bw.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>` +
-		string(bucket) + "</Name><Prefix>" + prefix + "</Prefix><Marker>" + marker +
+		bucket.Name + "</Name><Prefix>" + prefix + "</Prefix><Marker>" + marker +
 		"</Marker><MaxKeys>" + strconv.Itoa(limit) + "</MaxKeys><IsTruncated>" +
 		isTruncated + "</IsTruncate>")
 	for _, object := range objects {
 		bw.WriteString("<Contents><Key>" + object.Key + "</Key><Size>" +
-			strconv.FormatInt(object.Size, 10) + "</Size><Owner><ID>" + object.Owner.Id +
-			"</ID><DisplayName>" + object.Owner.Name +
+			strconv.FormatInt(object.Size, 10) + "</Size><Owner><ID>" + object.Owner.ID() +
+			"</ID><DisplayName>" + object.Owner.Name() +
 			"</DisplayName></Owner></Contents>")
 	}
 	for _, cp := range commonprefixes {
@@ -227,7 +256,11 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 //The operation returns a 200 OK if the bucket exists and you have permission to access it.
 //Otherwise, the operation might return responses such as 404 Not Found and 403 Forbidden.
 func (bucket bucketHandler) check(w http.ResponseWriter, r *http.Request) {
-	if backing.CheckBucket(getOwner(r), string(bucket)) {
+	owner, err := getOwner(r, bucket.Service.Host())
+	if err != nil {
+		return
+	}
+	if backing.CheckBucket(owner, bucket.Name) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -242,7 +275,11 @@ func (bucket bucketHandler) check(w http.ResponseWriter, r *http.Request) {
 //Not every string is an acceptable bucket name. For information on bucket naming restrictions, see Working with Amazon S3 Buckets.
 //DNS name constraints -> max length is 63
 func (bucket bucketHandler) put(w http.ResponseWriter, r *http.Request) {
-	if err := backing.CreateBucket(getOwner(r), string(bucket)); err != nil {
+	owner, err := getOwner(r, bucket.Service.Host())
+	if err != nil {
+		return
+	}
+	if err := backing.CreateBucket(owner, bucket.Name); err != nil {
 		writeISE(w, err.Error())
 		return
 	}
@@ -251,21 +288,29 @@ func (bucket bucketHandler) put(w http.ResponseWriter, r *http.Request) {
 }
 
 func (obj objectHandler) del(w http.ResponseWriter, r *http.Request) {
-	if err := backing.Del(getOwner(r), obj.bucket, obj.object); err != nil {
-		writeISE(w, fmt.Sprintf("error deleting %s/%s: %s", obj.bucket, obj.object, err))
+	owner, err := getOwner(r, obj.Bucket.Service.Host())
+	if err != nil {
+		return
+	}
+	if err := backing.Del(owner, obj.Bucket.Name, obj.object); err != nil {
+		writeISE(w, fmt.Sprintf("error deleting %s/%s: %s", obj.Bucket, obj.object, err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (obj objectHandler) get(w http.ResponseWriter, r *http.Request) {
-	fn, media, body, err := backing.Get(getOwner(r), obj.bucket, obj.object)
+	owner, err := getOwner(r, obj.Bucket.Service.Host())
+	if err != nil {
+		return
+	}
+	fn, media, body, err := backing.Get(owner, obj.Bucket.Name, obj.object)
 	if err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		writeISE(w, fmt.Sprintf("error geting %s/%s: %s", obj.bucket, obj.object, err))
+		writeISE(w, fmt.Sprintf("error geting %s/%s: %s", obj.Bucket, obj.object, err))
 		return
 	}
 	if err = r.ParseForm(); err != nil {
@@ -289,6 +334,10 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		defer r.Body.Close()
 	}
+	owner, err := getOwner(r, obj.Bucket.Service.Host())
+	if err != nil {
+		return
+	}
 	var fn, media string
 	var body io.Reader
 	if r.Method == "POST" {
@@ -302,23 +351,23 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 	} else {
 		media = r.Header.Get("Content-Type")
 		if disp := r.Header.Get("Content-Disposition"); disp != "" {
-			if _, params, err := mime.ParseMediaType(disp); err != nil {
+			if _, params, err := mime.ParseMediaType(disp); err == nil {
+				fn = params["filename"]
+			} else {
 				writeBadRequest(w, "cannot parse Content-Disposition "+disp+" "+err.Error())
 				return
-			} else {
-				fn = params["filename"]
 			}
 		}
 		body = r.Body
 	}
 	// Content-MD5 ?
 
-	if err := backing.Put(getOwner(r), obj.bucket, obj.object, fn, media, body); err != nil {
+	if err := backing.Put(owner, obj.Bucket.Name, obj.object, fn, media, body); err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		writeISE(w, fmt.Sprintf("error while storing %s in %s/%s: %s", fn, obj.bucket, obj.object, err))
+		writeISE(w, fmt.Sprintf("error while storing %s in %s/%s: %s", fn, obj.Bucket, obj.object, err))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
