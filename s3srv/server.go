@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"github.com/tgulacsi/s3weed/s3intf"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"net/textproto"
@@ -30,41 +31,56 @@ import (
 	"time"
 )
 
-var provider s3intf.Backer
+// Debug prints
+var Debug bool
 
 // NotFound prints Not Found
 var NotFound = errors.New("Not Found")
 
-type service string
-
-func (s service) Host() string {
-	return string(s)
+type service struct {
+	fqdn string
+	s3intf.Backer
 }
 
-func (host service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+// NewService returns a new service
+func NewService(fqdn string, provider s3intf.Backer) *service {
+	return &service{fqdn: fqdn, Backer: provider}
+}
+
+func (s *service) Host() string {
+	return s.fqdn
+}
+
+func (host *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if Debug {
+		log.Printf("ServeHTTP %s %s", r.Method, r.RequestURI)
+	}
 	if r.RequestURI == "*" {
 		writeBadRequest(w, "bad URI")
 		return
 	}
-	if string(host) == r.Host { //Service level
+	if host.fqdn == r.Host { //Service level
 		if r.Method != "GET" {
 			writeBadRequest(w, "only GET allowed at service level")
 			return
 		}
-		serviceGet(w, r)
+		host.serviceGet(w, r)
 		return
 	}
 
-	bucketHandler{Name: r.Host[:len(r.Host)-len(string(host))-1],
+	bucketHandler{Name: r.Host[:len(r.Host)-len(host.fqdn)-1],
 		Service: host}.ServeHTTP(w, r)
 }
 
 type bucketHandler struct {
 	Name    string
-	Service service
+	Service *service
 }
 
 func (bucket bucketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if Debug {
+		log.Printf("bucket %s", bucket)
+	}
 	if r.URL.Path != "" || r.Method == "POST" {
 		objectHandler{Bucket: bucket, object: r.URL.Path}.ServeHTTP(w, r)
 		return
@@ -89,6 +105,9 @@ type objectHandler struct {
 }
 
 func (obj objectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if Debug {
+		log.Printf("object %s", obj)
+	}
 	switch r.Method {
 	case "DELETE":
 		obj.del(w, r)
@@ -102,6 +121,7 @@ func (obj objectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeBadRequest(w http.ResponseWriter, message string) {
+	log.Printf("bad request %s", message)
 	w.Header().Set("Connection", "close")
 	w.WriteHeader(http.StatusBadRequest)
 	if message != "" {
@@ -155,11 +175,11 @@ func ValidBucketName(name string) bool {
 }
 
 //This implementation of the GET operation returns a list of all buckets owned by the authenticated sender of the request.
-func serviceGet(w http.ResponseWriter, r *http.Request) {
-	owner, err := s3intf.GetOwner(provider, r, "")
+func (s *service) serviceGet(w http.ResponseWriter, r *http.Request) {
+	owner, err := s3intf.GetOwner(s.Backer, r, "")
 	if err != nil {
 	}
-	owner, buckets, err := provider.ListBuckets(owner)
+	owner, buckets, err := s.ListBuckets(owner)
 	if err != nil {
 		writeISE(w, err.Error())
 		return
@@ -182,11 +202,11 @@ func serviceGet(w http.ResponseWriter, r *http.Request) {
 //All objects (including all object versions and Delete Markers) in the bucket
 //must be deleted before the bucket itself can be deleted.
 func (bucket bucketHandler) del(w http.ResponseWriter, r *http.Request) {
-	owner, err := s3intf.GetOwner(provider, r, string(bucket.Service))
+	owner, err := s3intf.GetOwner(bucket.Service, r, bucket.Service.fqdn)
 	if err != nil {
 		return
 	}
-	if err := provider.DelBucket(owner, bucket.Name); err != nil {
+	if err := bucket.Service.DelBucket(owner, bucket.Name); err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -220,11 +240,11 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	prefix := r.Form.Get("prefix")
 
-	owner, err := s3intf.GetOwner(provider, r, string(bucket.Service))
+	owner, err := s3intf.GetOwner(bucket.Service, r, bucket.Service.fqdn)
 	if err != nil {
 		return
 	}
-	objects, commonprefixes, truncated, err := provider.List(owner,
+	objects, commonprefixes, truncated, err := bucket.Service.List(owner,
 		bucket.Name, prefix, delimiter, marker, limit)
 	if err != nil {
 		if err == NotFound {
@@ -263,11 +283,11 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 //The operation returns a 200 OK if the bucket exists and you have permission to access it.
 //Otherwise, the operation might return responses such as 404 Not Found and 403 Forbidden.
 func (bucket bucketHandler) check(w http.ResponseWriter, r *http.Request) {
-	owner, err := s3intf.GetOwner(provider, r, bucket.Service.Host())
+	owner, err := s3intf.GetOwner(bucket.Service, r, bucket.Service.Host())
 	if err != nil {
 		return
 	}
-	if provider.CheckBucket(owner, bucket.Name) {
+	if bucket.Service.CheckBucket(owner, bucket.Name) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -282,11 +302,11 @@ func (bucket bucketHandler) check(w http.ResponseWriter, r *http.Request) {
 //Not every string is an acceptable bucket name. For information on bucket naming restrictions, see Working with Amazon S3 Buckets.
 //DNS name constraints -> max length is 63
 func (bucket bucketHandler) put(w http.ResponseWriter, r *http.Request) {
-	owner, err := s3intf.GetOwner(provider, r, bucket.Service.Host())
+	owner, err := s3intf.GetOwner(bucket.Service, r, bucket.Service.Host())
 	if err != nil {
 		return
 	}
-	if err := provider.CreateBucket(owner, bucket.Name); err != nil {
+	if err := bucket.Service.CreateBucket(owner, bucket.Name); err != nil {
 		writeISE(w, err.Error())
 		return
 	}
@@ -295,11 +315,11 @@ func (bucket bucketHandler) put(w http.ResponseWriter, r *http.Request) {
 }
 
 func (obj objectHandler) del(w http.ResponseWriter, r *http.Request) {
-	owner, err := s3intf.GetOwner(provider, r, obj.Bucket.Service.Host())
+	owner, err := s3intf.GetOwner(obj.Bucket.Service, r, obj.Bucket.Service.Host())
 	if err != nil {
 		return
 	}
-	if err := provider.Del(owner, obj.Bucket.Name, obj.object); err != nil {
+	if err := obj.Bucket.Service.Del(owner, obj.Bucket.Name, obj.object); err != nil {
 		writeISE(w, fmt.Sprintf("error deleting %s/%s: %s", obj.Bucket, obj.object, err))
 		return
 	}
@@ -307,11 +327,11 @@ func (obj objectHandler) del(w http.ResponseWriter, r *http.Request) {
 }
 
 func (obj objectHandler) get(w http.ResponseWriter, r *http.Request) {
-	owner, err := s3intf.GetOwner(provider, r, obj.Bucket.Service.Host())
+	owner, err := s3intf.GetOwner(obj.Bucket.Service, r, obj.Bucket.Service.Host())
 	if err != nil {
 		return
 	}
-	fn, media, body, err := provider.Get(owner, obj.Bucket.Name, obj.object)
+	fn, media, body, err := obj.Bucket.Service.Get(owner, obj.Bucket.Name, obj.object)
 	if err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
@@ -341,7 +361,7 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		defer r.Body.Close()
 	}
-	owner, err := s3intf.GetOwner(provider, r, obj.Bucket.Service.Host())
+	owner, err := s3intf.GetOwner(obj.Bucket.Service, r, obj.Bucket.Service.Host())
 	if err != nil {
 		return
 	}
@@ -369,7 +389,8 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 	}
 	// Content-MD5 ?
 
-	if err := provider.Put(owner, obj.Bucket.Name, obj.object, fn, media, body); err != nil {
+	if err := obj.Bucket.Service.Put(owner, obj.Bucket.Name, obj.object,
+		fn, media, body); err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
