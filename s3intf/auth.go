@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package s3weed
+package s3intf
 
 import (
 	"bytes"
@@ -31,8 +31,9 @@ import (
 var b64 = base64.StdEncoding
 var debug = false
 
-// http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html#ConstructingTheAuthenticationHeader
-func getOwner(r *http.Request, serviceHost string) (owner Owner, err error) {
+// GetOwner returns the Owner identified by the AccessKeyId in the request - if the authentication succeeds
+// See http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html#ConstructingTheAuthenticationHeader
+func GetOwner(b Backer, r *http.Request, serviceHost string) (owner Owner, err error) {
 	var access, signature string
 
 	params := r.URL.Query()
@@ -72,7 +73,7 @@ func getOwner(r *http.Request, serviceHost string) (owner Owner, err error) {
 		}
 	*/
 	var o Owner
-	if o, err = backing.GetOwner(access); err != nil {
+	if o, err = b.GetOwner(access); err != nil {
 		return
 	}
 	h := o.GetHMAC(sha1.New)
@@ -203,8 +204,8 @@ func getBytesToSign(r *http.Request, serviceHost string) []byte {
 		uri = uri[:i]
 	}
 	if debug {
-        log.Printf("uri=%s => i=%d (%s)", r.RequestURI, i, uri)
-    }
+		log.Printf("uri=%s => i=%d (%s)", r.RequestURI, i, uri)
+	}
 	canonicalPath += uri
 
 	sarray = sarray[0:0]

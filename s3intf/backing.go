@@ -1,6 +1,6 @@
-package s3weed
-
 /*
+Package s3intf defines an interface for an S3 server
+
 Copyright 2013 Tamás Gulácsi
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,18 +15,13 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+package s3intf
 
 import (
-	"errors"
 	"hash"
 	"io"
 	"time"
 )
-
-var backing WeedBacker
-
-// NotFound prints Not Found
-var NotFound = errors.New("Not Found")
 
 // Bucket is a holder for objects
 type Bucket struct {
@@ -52,8 +47,10 @@ type Owner interface {
 	GetHMAC(h func() hash.Hash) hash.Hash
 }
 
-// WeedBacker is an interface for what is needed for S3
-type WeedBacker interface {
+// Backer is an interface for what is needed for S3
+// You must implement this, and than s3srv can use this Backer to implement
+// the server
+type Backer interface {
 	// Authenticate checks authorization and returns an Owner or an error
 	Authenticate(auth, secret string) (Owner, error)
 	// ListBuckets list all buckets owned by the given owner

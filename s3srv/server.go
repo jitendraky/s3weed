@@ -1,5 +1,5 @@
 /*
-Package s3weed tries to provide an S3 compatible server backed by weed-fs
+Package s3srv provides an S3 compatible server using s3intf.Backer
 
 Copyright 2013 Tamás Gulácsi
 
@@ -15,11 +15,13 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package s3weed
+package s3srv
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"github.com/tgulacsi/s3weed/s3intf"
 	"io"
 	"mime"
 	"net/http"
@@ -27,6 +29,11 @@ import (
 	"strconv"
 	"time"
 )
+
+var provider s3intf.Backer
+
+// NotFound prints Not Found
+var NotFound = errors.New("Not Found")
 
 type service string
 
@@ -149,10 +156,10 @@ func ValidBucketName(name string) bool {
 
 //This implementation of the GET operation returns a list of all buckets owned by the authenticated sender of the request.
 func serviceGet(w http.ResponseWriter, r *http.Request) {
-	owner, err := getOwner(r, "")
+	owner, err := s3intf.GetOwner(provider, r, "")
 	if err != nil {
 	}
-	owner, buckets, err := backing.ListBuckets(owner)
+	owner, buckets, err := provider.ListBuckets(owner)
 	if err != nil {
 		writeISE(w, err.Error())
 		return
@@ -175,11 +182,11 @@ func serviceGet(w http.ResponseWriter, r *http.Request) {
 //All objects (including all object versions and Delete Markers) in the bucket
 //must be deleted before the bucket itself can be deleted.
 func (bucket bucketHandler) del(w http.ResponseWriter, r *http.Request) {
-	owner, err := getOwner(r, string(bucket.Service))
+	owner, err := s3intf.GetOwner(provider, r, string(bucket.Service))
 	if err != nil {
 		return
 	}
-	if err := backing.DelBucket(owner, bucket.Name); err != nil {
+	if err := provider.DelBucket(owner, bucket.Name); err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -213,11 +220,11 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	prefix := r.Form.Get("prefix")
 
-	owner, err := getOwner(r, string(bucket.Service))
+	owner, err := s3intf.GetOwner(provider, r, string(bucket.Service))
 	if err != nil {
 		return
 	}
-	objects, commonprefixes, truncated, err := backing.List(owner,
+	objects, commonprefixes, truncated, err := provider.List(owner,
 		bucket.Name, prefix, delimiter, marker, limit)
 	if err != nil {
 		if err == NotFound {
@@ -256,11 +263,11 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 //The operation returns a 200 OK if the bucket exists and you have permission to access it.
 //Otherwise, the operation might return responses such as 404 Not Found and 403 Forbidden.
 func (bucket bucketHandler) check(w http.ResponseWriter, r *http.Request) {
-	owner, err := getOwner(r, bucket.Service.Host())
+	owner, err := s3intf.GetOwner(provider, r, bucket.Service.Host())
 	if err != nil {
 		return
 	}
-	if backing.CheckBucket(owner, bucket.Name) {
+	if provider.CheckBucket(owner, bucket.Name) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -275,11 +282,11 @@ func (bucket bucketHandler) check(w http.ResponseWriter, r *http.Request) {
 //Not every string is an acceptable bucket name. For information on bucket naming restrictions, see Working with Amazon S3 Buckets.
 //DNS name constraints -> max length is 63
 func (bucket bucketHandler) put(w http.ResponseWriter, r *http.Request) {
-	owner, err := getOwner(r, bucket.Service.Host())
+	owner, err := s3intf.GetOwner(provider, r, bucket.Service.Host())
 	if err != nil {
 		return
 	}
-	if err := backing.CreateBucket(owner, bucket.Name); err != nil {
+	if err := provider.CreateBucket(owner, bucket.Name); err != nil {
 		writeISE(w, err.Error())
 		return
 	}
@@ -288,11 +295,11 @@ func (bucket bucketHandler) put(w http.ResponseWriter, r *http.Request) {
 }
 
 func (obj objectHandler) del(w http.ResponseWriter, r *http.Request) {
-	owner, err := getOwner(r, obj.Bucket.Service.Host())
+	owner, err := s3intf.GetOwner(provider, r, obj.Bucket.Service.Host())
 	if err != nil {
 		return
 	}
-	if err := backing.Del(owner, obj.Bucket.Name, obj.object); err != nil {
+	if err := provider.Del(owner, obj.Bucket.Name, obj.object); err != nil {
 		writeISE(w, fmt.Sprintf("error deleting %s/%s: %s", obj.Bucket, obj.object, err))
 		return
 	}
@@ -300,11 +307,11 @@ func (obj objectHandler) del(w http.ResponseWriter, r *http.Request) {
 }
 
 func (obj objectHandler) get(w http.ResponseWriter, r *http.Request) {
-	owner, err := getOwner(r, obj.Bucket.Service.Host())
+	owner, err := s3intf.GetOwner(provider, r, obj.Bucket.Service.Host())
 	if err != nil {
 		return
 	}
-	fn, media, body, err := backing.Get(owner, obj.Bucket.Name, obj.object)
+	fn, media, body, err := provider.Get(owner, obj.Bucket.Name, obj.object)
 	if err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
@@ -334,7 +341,7 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		defer r.Body.Close()
 	}
-	owner, err := getOwner(r, obj.Bucket.Service.Host())
+	owner, err := s3intf.GetOwner(provider, r, obj.Bucket.Service.Host())
 	if err != nil {
 		return
 	}
@@ -362,7 +369,7 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 	}
 	// Content-MD5 ?
 
-	if err := backing.Put(owner, obj.Bucket.Name, obj.object, fn, media, body); err != nil {
+	if err := provider.Put(owner, obj.Bucket.Name, obj.object, fn, media, body); err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
