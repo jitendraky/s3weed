@@ -51,10 +51,8 @@ type Owner interface {
 // You must implement this, and than s3srv can use this Backer to implement
 // the server
 type Backer interface {
-	// Authenticate checks authorization and returns an Owner or an error
-	Authenticate(auth, secret string) (Owner, error)
 	// ListBuckets list all buckets owned by the given owner
-	ListBuckets(owner Owner) (Owner, []Bucket, error)
+	ListBuckets(owner Owner) ([]Bucket, error)
 	// CreateBucket creates a new bucket
 	CreateBucket(owner Owner, bucket string) error
 	// CheckBucket returns whether the owner has a bucket named as given
@@ -69,7 +67,7 @@ type Backer interface {
 	// Put puts a file as a new object into the bucket
 	Put(owner Owner, bucket, object, filename, media string, body io.Reader) error
 	// Get retrieves an object from the bucket
-	Get(owner Owner, bucket, object string) (filename, media string, body io.Reader, err error)
+	Get(owner Owner, bucket, object string) (filename, media string, body io.ReadCloser, err error)
 	// Del deletes the object from the bucket
 	Del(owner Owner, bucket, object string) error
 	// GetOwner returns the Owner for the accessKey - or an error

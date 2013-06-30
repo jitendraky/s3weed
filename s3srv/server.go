@@ -178,8 +178,9 @@ func ValidBucketName(name string) bool {
 func (s *service) serviceGet(w http.ResponseWriter, r *http.Request) {
 	owner, err := s3intf.GetOwner(s.Backer, r, "")
 	if err != nil {
+		writeISE(w, "error getting owner: "+err.Error())
 	}
-	owner, buckets, err := s.ListBuckets(owner)
+	buckets, err := s.ListBuckets(owner)
 	if err != nil {
 		writeISE(w, err.Error())
 		return
