@@ -18,6 +18,7 @@ limitations under the License.
 
 import (
 	"errors"
+	"hash"
 	"io"
 	"time"
 )
@@ -47,8 +48,8 @@ type Owner interface {
 	ID() string
 	// Name returns then name of this owner
 	Name() string
-	// Sign HMAC-SHA1 signes the UTF-8 encoded string with the secret access key
-	Sign(stringToSign []byte) []byte
+	// GetHMAC returns a HMAC initialized with the secret key
+	GetHMAC(h func() hash.Hash) hash.Hash
 }
 
 // WeedBacker is an interface for what is needed for S3

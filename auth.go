@@ -1,5 +1,3 @@
-package s3weed
-
 /*
 Copyright 2013 Tamás Gulácsi
 
@@ -16,8 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+package s3weed
+
 import (
 	"bytes"
+	"crypto/sha1"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -26,23 +27,39 @@ import (
 	"strings"
 )
 
+var b64 = base64.StdEncoding
+
 // http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html#ConstructingTheAuthenticationHeader
 func getOwner(r *http.Request, host string) (owner Owner, err error) {
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		err = errors.New("No authorization header")
-		return
+	var access, signature string
+
+	params := r.URL.Query()
+	if _, ok := params["Expires"]; ok {
+		// Query string request authentication alternative.
+		//expires = true
+		//date = v[0]
+		access = params.Get("AWSAccessKeyId")
+		signature = params.Get("Signature")
 	}
-	// Authorization = "AWS" + " " + AWSAccessKeyId + ":" + Signature;
-	if strings.HasPrefix(auth, "AWS ") {
-		auth = auth[4:]
+	if access == "" || signature == "" {
+		auth := r.Header.Get("Authorization")
+		if auth != "" {
+			// Authorization = "AWS" + " " + AWSAccessKeyId + ":" + Signature;
+			if strings.HasPrefix(auth, "AWS ") {
+				auth = auth[4:]
+			}
+			i := strings.Index(auth, ":")
+			if i < 0 {
+				err = errors.New("no secret key?")
+				return
+			}
+			access, signature = auth[:i], auth[i+1:]
+		}
+		if access == "" || signature == "" {
+			err = errors.New("No authorization header")
+			return
+		}
 	}
-	i := strings.Index(auth, ":")
-	if i < 0 {
-		err = errors.New("no secret key?")
-		return
-	}
-	access, signature := auth[:i], auth[i+1:]
 
 	// Signature = Base64( HMAC-SHA1( YourSecretAccessKeyID, UTF-8-Encoding-Of( StringToSign ) ) );
 	bucket := ""
@@ -53,129 +70,122 @@ func getOwner(r *http.Request, host string) (owner Owner, err error) {
 	if o, err = backing.GetOwner(access); err != nil {
 		return
 	}
-	if base64.StdEncoding.EncodeToString(o.Sign(getStringToSign(r, bucket))) != signature {
-		err = errors.New("signature mismatch")
+	h := o.GetHMAC(sha1.New)
+	if _, err = h.Write(getBytesToSign(r, bucket)); err != nil {
+		err = errors.New("hashing error: " + err.Error())
+		return
+	}
+	actsign := b64.EncodeToString(h.Sum(nil))
+	if actsign != signature {
+		err = errors.New("signature mismatch (awaited " + signature +
+			", got " + actsign + ")")
 		return
 	}
 	return o, nil
 }
 
 func cr(w io.Writer) {
-	w.Write([]byte{10}) //CR
+	w.Write([]byte{10}) //"\n"
 }
 
-func getStringToSign(r *http.Request, serviceHost string) []byte {
-	// StringToSign = HTTP-Verb + "\n" +
-	//  Content-MD5 + "\n" +
-	//  Content-Type + "\n" +
-	//  Date + "\n" +
-	//  CanonicalizedAmzHeaders +
-	//  CanonicalizedResource;
-	res := bytes.NewBuffer(make([]byte, 64))
-	res.WriteString(r.Method)
-	cr(res)
-	for _, k := range [...]string{"Content-MD5", "Content-Type"} {
-		res.WriteString(r.Header.Get(k))
-		cr(res)
-	}
-	qry := r.URL.Query()
-	if exp, ok := qry["Expires"]; ok {
-		res.WriteString(exp[0])
-	} else {
-		res.WriteString(r.Header.Get("Date"))
-	}
-	cr(res)
-	appendCanonicalizedResource(res, r, serviceHost)
-	appendCanonicalizedAmzHeaders(res, r)
-
-	return res.Bytes()
+// s3ParamsToSign is a map of parameter names which is needed to be in signature
+// Copied from launchpad.net/goamz/s3/sign.go
+var s3ParamsToSign = map[string]bool{
+	"acl":                          true,
+	"location":                     true,
+	"logging":                      true,
+	"notification":                 true,
+	"partNumber":                   true,
+	"policy":                       true,
+	"requestPayment":               true,
+	"torrent":                      true,
+	"uploadId":                     true,
+	"uploads":                      true,
+	"versionId":                    true,
+	"versioning":                   true,
+	"versions":                     true,
+	"response-content-type":        true,
+	"response-content-language":    true,
+	"response-expires":             true,
+	"response-cache-control":       true,
+	"response-content-disposition": true,
+	"response-content-encoding":    true,
 }
 
-func appendCanonicalizedResource(w io.Writer, r *http.Request, serviceHost string) {
-	//For a virtual hosted-style request "https://johnsmith.s3.amazonaws.com/photos/puppy.jpg", the CanonicalizedResource is "/johnsmith".
-	//For the path-style request, "https://s3.amazonaws.com/johnsmith/photos/puppy.jpg", the CanonicalizedResource is "".
-	if serviceHost != "" && len(serviceHost) < len(r.Host) {
-		io.WriteString(w, "/")
-		io.WriteString(w, r.Host[:len(r.Host)-len(serviceHost)-1])
-	}
+// getBytesToSign returns the StringToSign
+// (see http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html#ConstructingTheAuthenticationHeader)
+// Most of it is copied from launchpad.net/goamz/s3/sign.go
+func getBytesToSign(r *http.Request, serviceHost string) []byte {
+	headers := r.Header
+	params := r.URL.Query()
 
-	//Append the path part of the un-decoded HTTP Request-URI, up-to but not including the query string.
-	//For a virtual hosted-style request "https://johnsmith.s3.amazonaws.com/photos/puppy.jpg", the CanonicalizedResource is "/johnsmith/photos/puppy.jpg".
-	//For a path-style request, "https://s3.amazonaws.com/johnsmith/photos/puppy.jpg", the CanonicalizedResource is "/johnsmith/photos/puppy.jpg". At this point, the CanonicalizedResource is the same for both the virtual hosted-style and path-style request.
-	io.WriteString(w, "/")
-	io.WriteString(w, r.URL.Path)
-
-	//If the request addresses a sub-resource, like ?versioning, ?location, ?acl, ?torrent, ?lifecycle, or ?versionid append the sub-resource, its value if it has one, and the question mark. Note that in case of multiple sub-resources, sub-resources must be lexicographically sorted by sub-resource name and separated by '&'. e.g. ?acl&versionId=value.
-	//The list of sub-resources that must be included when constructing the CanonicalizedResource Element are: acl, lifecycle, location, logging, notification, partNumber, policy, requestPayment, torrent, uploadId, uploads, versionId, versioning, versions and website.
-	i := 0
-	var v string
-	for _, k := range [...]string{ // sorted lexicographically
-		"acl",
-		"delete",
-		"lifecycle",
-		"location",
-		"logging",
-		"notification",
-		"partNumber",
-		"policy",
-		"requestPayment",
-		"response-cache-control",
-		"response-content-disposition",
-		"response-content-encoding",
-		"response-content-language",
-		"response-content-type",
-		"response-expires",
-		"torrent",
-		"uploadId",
-		"uploads",
-		"versionId",
-		"versioning",
-		"versions",
-		"website"} {
-
-		if v = r.Header.Get(k); v == "" {
-			continue
-		}
-		if i == 0 {
-			io.WriteString(w, "?")
-		} else {
-			io.WriteString(w, "&")
-		}
-		io.WriteString(w, k)
-		io.WriteString(w, "=")
-		io.WriteString(w, v)
-	}
-	//If the request specifies query string parameters overriding the response header values (see Get Object), append the query string parameters, and its values. When signing you do not encode these values. However, when making the request, you must encode these parameter values. The query string parameters in a GET request include response-content-type, response-content-language, response-expires, response-cache-control, response-content-disposition, response-content-encoding.
-	//The delete query string parameter must be including when creating the CanonicalizedResource for a Multi-Object Delete request.
-}
-
-func appendCanonicalizedAmzHeaders(w io.Writer, r *http.Request) {
-	//1. Convert each HTTP header name to lower-case. For example, 'X-Amz-Date' becomes 'x-amz-date'.
-	//2. Sort the collection of headers lexicographically by header name.
-	keys := make([]string, len(r.Header)/2)
-	qry := r.URL.Query()
-	for k, _ := range qry {
-		if strings.HasPrefix(k, "X-Amz-") {
-			keys = append(keys, k)
-		}
-	}
-	sort.Strings(keys)
-
-	//3. Combine header fields with the same name into one "header-name:comma-separated-value-list" pair as prescribed by RFC 2616, section 4.2, without any white-space between values. For example, the two metadata headers 'x-amz-meta-username: fred' and 'x-amz-meta-username: barney' would be combined into the single header 'x-amz-meta-username: fred,barney'.
-	var i int
-	var v string
-	for _, k := range keys {
-		//4. "Unfold" long headers that span multiple lines (as allowed by RFC 2616, section 4.2) by replacing the folding white-space (including new-line) by a single space.
-		//5. Trim any white-space around the colon in the header. For example, the header 'x-amz-meta-username: fred,barney' would become 'x-amz-meta-username:fred,barney'
-		io.WriteString(w, strings.ToLower(k))
-		io.WriteString(w, ":")
-		for i, v = range qry[k] {
-			if i != 0 {
-				io.WriteString(w, ",")
+	var md5, ctype, date, xamz string
+	var xamzDate bool
+	sarray := make([]string, 0, 4)
+	for k, v := range headers {
+		k = strings.ToLower(k)
+		switch k {
+		case "content-md5":
+			md5 = v[0]
+		case "content-type":
+			ctype = v[0]
+		case "date":
+			if !xamzDate {
+				date = v[0]
 			}
-			io.WriteString(w, v)
+		default:
+			if strings.HasPrefix(k, "x-amz-") {
+				vall := strings.Join(v, ",")
+				sarray = append(sarray, k+":"+vall)
+				if k == "x-amz-date" {
+					xamzDate = true
+					date = ""
+				}
+			}
 		}
-		//6. Finally, append a new-line (U+000A) to each canonicalized header in the resulting list. Construct the CanonicalizedResource element by concatenating all headers in this list into a single string.
-		cr(w)
 	}
+	if len(sarray) > 0 {
+		sort.StringSlice(sarray).Sort()
+		xamz = strings.Join(sarray, "\n") + "\n"
+	}
+
+	if v, ok := params["Expires"]; ok {
+		// Query string request authentication alternative.
+		date = v[0]
+	}
+
+	//return method + "\n" + md5 + "\n" + ctype + "\n" + date + "\n" + xamz + canonicalPath
+	res := bytes.NewBuffer(make([]byte, 0, 64))
+	res.WriteString(r.Method)
+	for _, str := range []string{md5, ctype, date, xamz} {
+		cr(res)
+		res.WriteString(str)
+	}
+	// canonicalPath must start with "/" + Bucket
+	canonicalPath := ""
+	if len(r.Host) > len(serviceHost) { // bucket name is from host name
+		canonicalPath = "/" + r.Host[:len(r.Host)-len(serviceHost)-1]
+	}
+	canonicalPath += r.URL.Path
+
+	sarray = sarray[0:0]
+	for k, v := range params {
+		if s3ParamsToSign[k] {
+			for _, vi := range v {
+				if vi == "" {
+					sarray = append(sarray, k)
+				} else {
+					// "When signing you do not encode these values."
+					sarray = append(sarray, k+"="+vi)
+				}
+			}
+		}
+	}
+	if len(sarray) > 0 {
+		sort.StringSlice(sarray).Sort()
+		canonicalPath += "?" + strings.Join(sarray, "&")
+	}
+
+	res.WriteString(canonicalPath)
+	return res.Bytes()
 }
