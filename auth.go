@@ -22,15 +22,17 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
 )
 
 var b64 = base64.StdEncoding
+var debug = false
 
 // http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html#ConstructingTheAuthenticationHeader
-func getOwner(r *http.Request, host string) (owner Owner, err error) {
+func getOwner(r *http.Request, serviceHost string) (owner Owner, err error) {
 	var access, signature string
 
 	params := r.URL.Query()
@@ -62,16 +64,19 @@ func getOwner(r *http.Request, host string) (owner Owner, err error) {
 	}
 
 	// Signature = Base64( HMAC-SHA1( YourSecretAccessKeyID, UTF-8-Encoding-Of( StringToSign ) ) );
-	bucket := ""
-	if len(r.Host) > len(host) {
-		bucket = r.Host[:len(r.Host)-len(host)-1]
-	}
+	/*
+		host := stripPort(r.Host)
+		serviceHost = stripPort(serviceHost)
+		if len(host) > len(serviceHost) {
+			bucket = host[:len(host)-len(serviceHost)-1]
+		}
+	*/
 	var o Owner
 	if o, err = backing.GetOwner(access); err != nil {
 		return
 	}
 	h := o.GetHMAC(sha1.New)
-	if _, err = h.Write(getBytesToSign(r, bucket)); err != nil {
+	if _, err = h.Write(getBytesToSign(r, serviceHost)); err != nil {
 		err = errors.New("hashing error: " + err.Error())
 		return
 	}
@@ -118,6 +123,9 @@ var s3ParamsToSign = map[string]bool{
 func getBytesToSign(r *http.Request, serviceHost string) []byte {
 	headers := r.Header
 	params := r.URL.Query()
+	if debug {
+		log.Printf("headers: %s\nparams: %s", headers, params)
+	}
 
 	var md5, ctype, date, xamz string
 	var xamzDate bool
@@ -139,6 +147,11 @@ func getBytesToSign(r *http.Request, serviceHost string) []byte {
 				sarray = append(sarray, k+":"+vall)
 				if k == "x-amz-date" {
 					xamzDate = true
+					//When an x-amz-date header is present in a request,
+					//the system will ignore any Date header when computing
+					//the request signature. Therefore, if you include the
+					//x-amz-date header, use the empty string for the Date
+					//when constructing the StringToSign.
 					date = ""
 				}
 			}
@@ -162,11 +175,37 @@ func getBytesToSign(r *http.Request, serviceHost string) []byte {
 		res.WriteString(str)
 	}
 	// canonicalPath must start with "/" + Bucket
-	canonicalPath := ""
-	if len(r.Host) > len(serviceHost) { // bucket name is from host name
-		canonicalPath = "/" + r.Host[:len(r.Host)-len(serviceHost)-1]
+	if debug {
+		log.Printf("host: %s => %s, serviceHost: %s => %s",
+			r.Host, stripPort(r.Host),
+			serviceHost, stripPort(serviceHost))
 	}
-	canonicalPath += r.URL.Path
+	canonicalPath := ""
+	host := stripPort(r.Host)
+	if serviceHost == "" {
+		canonicalPath = "/" + host
+	} else {
+		serviceHost = stripPort(serviceHost)
+		if len(host) > len(serviceHost) { // bucket name is from host name
+			canonicalPath = "/" + host[:len(host)-len(serviceHost)-1]
+		}
+	}
+	//Append the path part of the un-decoded HTTP Request-URI,
+	//up-to but not including the query string.
+	uri := r.RequestURI
+	i := strings.Index(uri, "://")
+	if i < 0 {
+		uri = uri[strings.Index(uri, "/"):]
+	} else {
+		uri = uri[i+3+strings.Index(uri[i+3:], "/"):]
+	}
+	if i = strings.Index(uri, "?"); i >= 0 {
+		uri = uri[:i]
+	}
+	if debug {
+        log.Printf("uri=%s => i=%d (%s)", r.RequestURI, i, uri)
+    }
+	canonicalPath += uri
 
 	sarray = sarray[0:0]
 	for k, v := range params {
@@ -188,4 +227,13 @@ func getBytesToSign(r *http.Request, serviceHost string) []byte {
 
 	res.WriteString(canonicalPath)
 	return res.Bytes()
+}
+
+func stripPort(text string) string {
+	if text != "" {
+		if i := strings.Index(text, ":"); i >= 0 {
+			return text[:i]
+		}
+	}
+	return text
 }
