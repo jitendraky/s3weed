@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/tgulacsi/s3weed/dirS3"
+	"github.com/tgulacsi/s3weed/s3impl/dirS3"
 	"github.com/tgulacsi/s3weed/s3srv"
 	"log"
 	"net/http"

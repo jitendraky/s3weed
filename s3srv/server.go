@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -60,6 +61,12 @@ func (host *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if host.fqdn == r.Host { //Service level
+		log.Printf("Path: %s", r.URL.Path)
+		if r.URL.Path != "/" {
+			segments := strings.SplitN(r.URL.Path[1:], "/", 2)
+			bucketHandler{Name: segments[0], Service: host}.ServeHTTP(w, r)
+			return
+		}
 		if r.Method != "GET" {
 			writeBadRequest(w, "only GET allowed at service level")
 			return
@@ -81,7 +88,7 @@ func (bucket bucketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if Debug {
 		log.Printf("bucket %s", bucket)
 	}
-	if r.URL.Path != "" || r.Method == "POST" {
+	if (r.URL.Path != "/" && r.URL.Path != "/"+bucket.Name) || r.Method == "POST" {
 		objectHandler{Bucket: bucket, object: r.URL.Path}.ServeHTTP(w, r)
 		return
 	}
@@ -176,9 +183,14 @@ func ValidBucketName(name string) bool {
 
 //This implementation of the GET operation returns a list of all buckets owned by the authenticated sender of the request.
 func (s *service) serviceGet(w http.ResponseWriter, r *http.Request) {
+	log.Printf("service: %#v", s)
 	owner, err := s3intf.GetOwner(s.Backer, r, "")
 	if err != nil {
 		writeISE(w, "error getting owner: "+err.Error())
+		return
+	} else if owner == nil {
+		writeBadRequest(w, "no owner")
+		return
 	}
 	buckets, err := s.ListBuckets(owner)
 	if err != nil {
@@ -205,6 +217,7 @@ func (s *service) serviceGet(w http.ResponseWriter, r *http.Request) {
 func (bucket bucketHandler) del(w http.ResponseWriter, r *http.Request) {
 	owner, err := s3intf.GetOwner(bucket.Service, r, bucket.Service.fqdn)
 	if err != nil {
+		writeBadRequest(w, "error getting owner: "+err.Error())
 		return
 	}
 	if err := bucket.Service.DelBucket(owner, bucket.Name); err != nil {
@@ -243,6 +256,7 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 
 	owner, err := s3intf.GetOwner(bucket.Service, r, bucket.Service.fqdn)
 	if err != nil {
+		writeBadRequest(w, "error getting owner: "+err.Error())
 		return
 	}
 	objects, commonprefixes, truncated, err := bucket.Service.List(owner,
@@ -286,6 +300,7 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 func (bucket bucketHandler) check(w http.ResponseWriter, r *http.Request) {
 	owner, err := s3intf.GetOwner(bucket.Service, r, bucket.Service.Host())
 	if err != nil {
+		writeBadRequest(w, "error getting owner: "+err.Error())
 		return
 	}
 	if bucket.Service.CheckBucket(owner, bucket.Name) {
@@ -303,10 +318,13 @@ func (bucket bucketHandler) check(w http.ResponseWriter, r *http.Request) {
 //Not every string is an acceptable bucket name. For information on bucket naming restrictions, see Working with Amazon S3 Buckets.
 //DNS name constraints -> max length is 63
 func (bucket bucketHandler) put(w http.ResponseWriter, r *http.Request) {
+	log.Printf("%s.put", bucket)
 	owner, err := s3intf.GetOwner(bucket.Service, r, bucket.Service.Host())
 	if err != nil {
+		writeBadRequest(w, "error getting owner: "+err.Error())
 		return
 	}
+	log.Printf("creating bucket %s for %s", bucket.Name, owner)
 	if err := bucket.Service.CreateBucket(owner, bucket.Name); err != nil {
 		writeISE(w, err.Error())
 		return
@@ -318,6 +336,7 @@ func (bucket bucketHandler) put(w http.ResponseWriter, r *http.Request) {
 func (obj objectHandler) del(w http.ResponseWriter, r *http.Request) {
 	owner, err := s3intf.GetOwner(obj.Bucket.Service, r, obj.Bucket.Service.Host())
 	if err != nil {
+		writeBadRequest(w, "error getting owner: "+err.Error())
 		return
 	}
 	if err := obj.Bucket.Service.Del(owner, obj.Bucket.Name, obj.object); err != nil {
@@ -330,6 +349,7 @@ func (obj objectHandler) del(w http.ResponseWriter, r *http.Request) {
 func (obj objectHandler) get(w http.ResponseWriter, r *http.Request) {
 	owner, err := s3intf.GetOwner(obj.Bucket.Service, r, obj.Bucket.Service.Host())
 	if err != nil {
+		writeBadRequest(w, "error getting owner: "+err.Error())
 		return
 	}
 	fn, media, body, err := obj.Bucket.Service.Get(owner, obj.Bucket.Name, obj.object)
@@ -364,6 +384,7 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 	}
 	owner, err := s3intf.GetOwner(obj.Bucket.Service, r, obj.Bucket.Service.Host())
 	if err != nil {
+		writeBadRequest(w, "error getting owner: "+err.Error())
 		return
 	}
 	var fn, media string
