@@ -151,19 +151,20 @@ Host: johnsmith.s3.amazonaws.com`,
 			//serviceHost = r.Host[strings.Index(r.Host, ".")+1:]
 			//t.Logf("r.Host=%s => serviceHost=%s", r.Host, serviceHost)
 		}
-		if strings.Index(row[0], "x-amz-date:") > 0 || serviceHost == "" {
-			debug, dedebug = true, true
-		}
-		got = getBytesToSign(r, serviceHost)
+		//if strings.Index(row[0], "x-amz-date:") > 0 || serviceHost == "" {
+		//	Debug, dedebug = true, !Debug
+		//}
+		got = GetBytesToSign(r, serviceHost)
 		if string(got) != row[1] {
 			d := getDiffPos(string(got), row[1])
+			//log.Printf("d=%d", d)
 			t.Errorf("%d. got {{{%s}}}\n awaited [[[%s]]] at pos %d (%s != %s)",
 				i, string(got), row[1],
 				d, string([]byte{got[d]}), string([]byte{row[1][d]}))
 			t.Fail()
 		}
 		if dedebug {
-			debug, dedebug = false, false
+			Debug, dedebug = false, false
 		}
 	}
 }
@@ -191,10 +192,21 @@ func stripspaces(text string, stripbsn bool) string {
 }
 
 func getDiffPos(a, b string) int {
-	for i := range a {
+	if a == "" || b == "" {
+		return 0
+	}
+	n := len(a)
+	if len(a) > len(b) {
+		n = len(b)
+	}
+	//log.Printf("la=%d lb=%d n=%d", len(a), len(b), n)
+	for i := 0; i < n; i++ {
 		if a[i] != b[i] {
 			return i
 		}
+	}
+	if len(a) != len(b) {
+		return n - 1
 	}
 	return -1
 }

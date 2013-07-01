@@ -29,7 +29,9 @@ import (
 )
 
 var b64 = base64.StdEncoding
-var debug = false
+
+// Debug should be true only for mazochists
+var Debug = false
 
 // GetOwner returns the Owner identified by the AccessKeyId in the request - if the authentication succeeds
 // See http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html#ConstructingTheAuthenticationHeader
@@ -76,8 +78,12 @@ func GetOwner(b Backer, r *http.Request, serviceHost string) (owner Owner, err e
 	if o, err = b.GetOwner(access); err != nil {
 		return
 	}
+	bts := GetBytesToSign(r, serviceHost)
+	if Debug {
+		log.Printf("%s host=%s owner=%s bts=%q", r, serviceHost, o, bts)
+	}
 	h := o.GetHMAC(sha1.New)
-	if _, err = h.Write(getBytesToSign(r, serviceHost)); err != nil {
+	if _, err = h.Write(bts); err != nil {
 		err = errors.New("hashing error: " + err.Error())
 		return
 	}
@@ -118,13 +124,13 @@ var s3ParamsToSign = map[string]bool{
 	"response-content-encoding":    true,
 }
 
-// getBytesToSign returns the StringToSign
+// GetBytesToSign returns the StringToSign
 // (see http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html#ConstructingTheAuthenticationHeader)
 // Most of it is copied from launchpad.net/goamz/s3/sign.go
-func getBytesToSign(r *http.Request, serviceHost string) []byte {
+func GetBytesToSign(r *http.Request, serviceHost string) []byte {
 	headers := r.Header
 	params := r.URL.Query()
-	if debug {
+	if Debug {
 		log.Printf("headers: %s\nparams: %s", headers, params)
 	}
 
@@ -176,13 +182,13 @@ func getBytesToSign(r *http.Request, serviceHost string) []byte {
 		res.WriteString(str)
 	}
 	// canonicalPath must start with "/" + Bucket
-	if debug {
-		log.Printf("host: %s => %s, serviceHost: %s => %s",
+	canonicalPath := ""
+	host := stripPort(r.Host)
+	if Debug {
+		log.Printf("%s.Host: %s => %s, serviceHost: %s => %s", r,
 			r.Host, stripPort(r.Host),
 			serviceHost, stripPort(serviceHost))
 	}
-	canonicalPath := ""
-	host := stripPort(r.Host)
 	if serviceHost == "" {
 		canonicalPath = "/" + host
 	} else {
@@ -195,16 +201,19 @@ func getBytesToSign(r *http.Request, serviceHost string) []byte {
 	//up-to but not including the query string.
 	uri := r.RequestURI
 	i := strings.Index(uri, "://")
-	if i < 0 {
-		uri = uri[strings.Index(uri, "/"):]
+	if i >= 0 {
+		uri = uri[i+3:]
+	}
+	if i = strings.Index(uri, "/"); i >= 0 {
+		uri = uri[i:]
 	} else {
-		uri = uri[i+3+strings.Index(uri[i+3:], "/"):]
+		uri = "/" + uri
 	}
 	if i = strings.Index(uri, "?"); i >= 0 {
 		uri = uri[:i]
 	}
-	if debug {
-		log.Printf("uri=%s => i=%d (%s)", r.RequestURI, i, uri)
+	if Debug {
+		log.Printf("uri=%s => i=%d (%s) cp=%s", r.RequestURI, i, uri, canonicalPath)
 	}
 	canonicalPath += uri
 

@@ -56,7 +56,7 @@ func (host *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if Debug {
 		log.Printf("ServeHTTP %s %s", r.Method, r.RequestURI)
 	}
-	if r.RequestURI == "*" {
+	if r.RequestURI == "*" || r.Host == "" || r.URL == nil || r.URL.Path == "" {
 		writeBadRequest(w, "bad URI")
 		return
 	}
@@ -183,8 +183,8 @@ func ValidBucketName(name string) bool {
 
 //This implementation of the GET operation returns a list of all buckets owned by the authenticated sender of the request.
 func (s *service) serviceGet(w http.ResponseWriter, r *http.Request) {
-	log.Printf("service: %#v", s)
 	owner, err := s3intf.GetOwner(s.Backer, r, "")
+	log.Printf("%#v.serviceGet owner=%s err=%s", s, owner, err)
 	if err != nil {
 		writeISE(w, "error getting owner: "+err.Error())
 		return
