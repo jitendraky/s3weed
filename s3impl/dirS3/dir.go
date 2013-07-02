@@ -46,13 +46,20 @@ func NewDirS3(root string) s3intf.Storage {
 
 // ListBuckets list all buckets owned by the given owner
 func (root hier) ListBuckets(owner s3intf.Owner) ([]s3intf.Bucket, error) {
-	dh, err := os.Open(filepath.Join(string(root), owner.ID()))
+	dn := filepath.Join(string(root), owner.ID())
+	dh, err := os.Open(dn)
 	if err != nil {
-		return nil, err
+		if _, ok := err.(*os.PathError); ok {
+			os.MkdirAll(dn, 0750)
+			dh, err = os.Open(dn)
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer dh.Close()
 	infos, err := dh.Readdir(1000)
-	if err != nil {
+	if err != nil && err != io.EOF {
 		return nil, err
 	}
 	buckets := make([]s3intf.Bucket, len(infos))

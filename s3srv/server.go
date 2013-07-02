@@ -54,14 +54,14 @@ func (s *service) Host() string {
 
 func (host *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if Debug {
-		log.Printf("ServeHTTP %s %s", r.Method, r.RequestURI)
+		log.Printf("%s.ServeHTTP %s %s", host.fqdn, r.Method, r.RequestURI)
 	}
 	if r.RequestURI == "*" || r.Host == "" || r.URL == nil || r.URL.Path == "" {
 		writeBadRequest(w, "bad URI")
 		return
 	}
 	if host.fqdn == r.Host { //Service level
-		log.Printf("Path: %s", r.URL.Path)
+		log.Printf("service level request, path: %s", r.URL.Path)
 		if r.URL.Path != "/" {
 			segments := strings.SplitN(r.URL.Path[1:], "/", 2)
 			bucketHandler{Name: segments[0], Service: host}.ServeHTTP(w, r)
@@ -183,7 +183,7 @@ func ValidBucketName(name string) bool {
 
 //This implementation of the GET operation returns a list of all buckets owned by the authenticated sender of the request.
 func (s *service) serviceGet(w http.ResponseWriter, r *http.Request) {
-	owner, err := s3intf.GetOwner(s.Storage, r, "")
+	owner, err := s3intf.GetOwner(s, r, s.fqdn)
 	log.Printf("%#v.serviceGet owner=%s err=%s", s, owner, err)
 	if err != nil {
 		writeISE(w, "error getting owner: "+err.Error())

@@ -91,7 +91,7 @@ func GetOwner(b Storage, r *http.Request, serviceHost string) (owner Owner, err 
 	}
 	bts := GetBytesToSign(r, serviceHost)
 	if Debug {
-		log.Printf("%s host=%s owner=%s bts=%q", r, serviceHost, o, bts)
+		log.Printf("%s serviceHost=%s owner=%s bts=%q", r, serviceHost, o, bts)
 	}
 	if !Check(o, bts, challenge) {
 		err = errors.New("signature mismatch")

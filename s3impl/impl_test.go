@@ -5,6 +5,7 @@ import (
 	"github.com/tgulacsi/s3weed/s3impl/dirS3"
 	"github.com/tgulacsi/s3weed/s3intf"
 	"github.com/tgulacsi/s3weed/s3srv"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -29,9 +30,11 @@ func Test01ListBuckets(t *testing.T) {
 			t.Errorf("cannot get owner for test: %s", err)
 			continue
 		}
-		t.Logf("===")
+		log.Printf("===")
 		s3intf.Debug = true
 		bts := s3intf.GetBytesToSign(req, serviceHost)
+		log.Printf("bts: %q", bts)
+		log.Printf("---")
 		t.Logf("owner: %s bts=%q", o, bts)
 		actsign := b64.EncodeToString(o.CalcHash(bts))
 		req.Header.Set("Authorization", "AWS test:"+actsign)
