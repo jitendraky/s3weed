@@ -21,6 +21,7 @@ package dirS3
 
 import (
 	"crypto/hmac"
+	"crypto/sha1"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -38,7 +39,7 @@ type hier string
 // NewDirS3 stores everything under a common root.
 // The first level of subdirs are the owners,
 // the second are the buckets, and each object is a file under the bucket dir.
-func NewDirS3(root string) s3intf.Backer {
+func NewDirS3(root string) s3intf.Storage {
 	os.MkdirAll(root, 0750)
 	return hier(root)
 }
@@ -210,6 +211,11 @@ func (u user) Name() string {
 // GetHMAC returns a HMAC initialized with the secret key
 func (u user) GetHMAC(h func() hash.Hash) hash.Hash {
 	return hmac.New(h, nil)
+}
+
+// Check checks the validity of the authorization
+func (u user) CalcHash(bytesToSign []byte) []byte {
+	return s3intf.CalcHash(hmac.New(sha1.New, nil), bytesToSign)
 }
 
 // GetOwner returns the Owner for the accessKey - or an error

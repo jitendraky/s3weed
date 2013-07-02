@@ -18,15 +18,21 @@ package s3intf
 
 import (
 	"bytes"
-	"crypto/sha1"
 	"encoding/base64"
 	"errors"
+	"hash"
 	"io"
 	"log"
 	"net/http"
 	"sort"
 	"strings"
 )
+
+// CalcHash is a helper if you have a hash function initialized to calculate the hash of bytesToSign
+func CalcHash(hsh hash.Hash, bytesToSign []byte) []byte {
+	hsh.Write(bytesToSign)
+	return hsh.Sum(nil)
+}
 
 var b64 = base64.StdEncoding
 
@@ -35,7 +41,7 @@ var Debug = false
 
 // GetOwner returns the Owner identified by the AccessKeyId in the request - if the authentication succeeds
 // See http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html#ConstructingTheAuthenticationHeader
-func GetOwner(b Backer, r *http.Request, serviceHost string) (owner Owner, err error) {
+func GetOwner(b Storage, r *http.Request, serviceHost string) (owner Owner, err error) {
 	var access, signature string
 
 	params := r.URL.Query()
@@ -74,6 +80,11 @@ func GetOwner(b Backer, r *http.Request, serviceHost string) (owner Owner, err e
 			bucket = host[:len(host)-len(serviceHost)-1]
 		}
 	*/
+	challenge, e := b64.DecodeString(signature)
+	if e != nil {
+		err = errors.New("not base64-encoded signature: " + e.Error())
+		return
+	}
 	var o Owner
 	if o, err = b.GetOwner(access); err != nil {
 		return
@@ -82,15 +93,8 @@ func GetOwner(b Backer, r *http.Request, serviceHost string) (owner Owner, err e
 	if Debug {
 		log.Printf("%s host=%s owner=%s bts=%q", r, serviceHost, o, bts)
 	}
-	h := o.GetHMAC(sha1.New)
-	if _, err = h.Write(bts); err != nil {
-		err = errors.New("hashing error: " + err.Error())
-		return
-	}
-	actsign := b64.EncodeToString(h.Sum(nil))
-	if actsign != signature {
-		err = errors.New("signature mismatch (awaited " + signature +
-			", got " + actsign + ")")
+	if !Check(o, bts, challenge) {
+		err = errors.New("signature mismatch")
 		return
 	}
 	return o, nil

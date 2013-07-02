@@ -1,5 +1,5 @@
 /*
-Package s3srv provides an S3 compatible server using s3intf.Backer
+Package s3srv provides an S3 compatible server using s3intf.Storage
 
 Copyright 2013 Tamás Gulácsi
 
@@ -40,12 +40,12 @@ var NotFound = errors.New("Not Found")
 
 type service struct {
 	fqdn string
-	s3intf.Backer
+	s3intf.Storage
 }
 
 // NewService returns a new service
-func NewService(fqdn string, provider s3intf.Backer) *service {
-	return &service{fqdn: fqdn, Backer: provider}
+func NewService(fqdn string, provider s3intf.Storage) *service {
+	return &service{fqdn: fqdn, Storage: provider}
 }
 
 func (s *service) Host() string {
@@ -183,7 +183,7 @@ func ValidBucketName(name string) bool {
 
 //This implementation of the GET operation returns a list of all buckets owned by the authenticated sender of the request.
 func (s *service) serviceGet(w http.ResponseWriter, r *http.Request) {
-	owner, err := s3intf.GetOwner(s.Backer, r, "")
+	owner, err := s3intf.GetOwner(s.Storage, r, "")
 	log.Printf("%#v.serviceGet owner=%s err=%s", s, owner, err)
 	if err != nil {
 		writeISE(w, "error getting owner: "+err.Error())

@@ -18,7 +18,8 @@ limitations under the License.
 package s3intf
 
 import (
-	"hash"
+	"bytes"
+	//"hash"
 	"io"
 	"time"
 )
@@ -37,20 +38,34 @@ type Object struct {
 	Owner        Owner
 }
 
+// Hasher is an interface for hashign for authorization (checking)
+type Hasher interface {
+	// CalcHash calculates the hash of bytesToSign
+	CalcHash(bytesToSign []byte) []byte
+}
+
+// Check checks the validity of the authorization,
+func Check(prov Hasher, bytesToSign []byte, challenge []byte) bool {
+	if challenge == nil {
+		return false
+	}
+	return bytes.Equal(prov.CalcHash(bytesToSign), challenge)
+}
+
 // Owner is the object's owner
 type Owner interface {
 	// ID returns the ID of this owner
 	ID() string
 	// Name returns then name of this owner
 	Name() string
-	// GetHMAC returns a HMAC initialized with the secret key
-	GetHMAC(h func() hash.Hash) hash.Hash
+	// an Owner must implement the Authorizer interface (Check method)
+	Hasher
 }
 
-// Backer is an interface for what is needed for S3
-// You must implement this, and than s3srv can use this Backer to implement
+// Storage is an interface for what is needed for S3
+// You must implement this, and than s3srv can use this Storage to implement
 // the server
-type Backer interface {
+type Storage interface {
 	// ListBuckets list all buckets owned by the given owner
 	ListBuckets(owner Owner) ([]Bucket, error)
 	// CreateBucket creates a new bucket
