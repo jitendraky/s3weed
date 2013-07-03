@@ -379,9 +379,11 @@ func (obj objectHandler) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
-	if r.Body != nil {
-		defer r.Body.Close()
+	if r.Body == nil {
+		writeBadRequest(w, "nil body")
+		return
 	}
+	defer r.Body.Close()
 	owner, err := s3intf.GetOwner(obj.Bucket.Service, r, obj.Bucket.Service.Host())
 	if err != nil {
 		writeBadRequest(w, "error getting owner: "+err.Error())
