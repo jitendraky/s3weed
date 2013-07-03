@@ -116,7 +116,7 @@ func doReq(t *testing.T, method, path string, body io.Reader, check ResponseChec
 		handlers[i].ServeHTTP(rw, req)
 		if check != nil {
 			if err = check(rw); err != nil {
-				t.Errorf("bad response: %s %q", err.Error(), rw.Body.Bytes())
+				t.Fatalf("bad response: %s %q", err.Error(), rw.Body.Bytes())
 			}
 		}
 	}

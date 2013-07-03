@@ -91,9 +91,11 @@ func (bucket bucketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	path := r.URL.Path
 	if !bucket.VirtualHost {
+		//log.Printf("bucket.Name=%s path=%s", bucket.Name, path)
 		path = path[len(bucket.Name)+1:]
 	}
-	if path != "/" || r.Method == "POST" {
+	//log.Printf("path=%s", path)
+	if !(path == "" || path == "/") || r.Method == "POST" {
 		objectHandler{Bucket: bucket, object: path}.ServeHTTP(w, r)
 		return
 	}

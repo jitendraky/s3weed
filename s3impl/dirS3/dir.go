@@ -92,7 +92,7 @@ func (root hier) DelBucket(owner s3intf.Owner, bucket string) error {
 		return err
 	}
 	infos, err := dh.Readdir(1)
-	if err != nil {
+	if err != nil && err != io.EOF {
 		dh.Close()
 		return err
 	}
@@ -161,7 +161,7 @@ func (root hier) findFile(owner s3intf.Owner, bucket, object string) (string, er
 	prefix := encodeFilename(object)
 	var names []string
 	for err == nil {
-		if names, err = dh.Readdirnames(1000); err != nil {
+		if names, err = dh.Readdirnames(1000); err != nil && err != io.EOF {
 			return "", err
 		}
 		for _, nm := range names {
