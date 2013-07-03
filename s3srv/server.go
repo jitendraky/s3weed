@@ -76,20 +76,25 @@ func (host *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bucketHandler{Name: r.Host[:len(r.Host)-len(host.fqdn)-1],
-		Service: host}.ServeHTTP(w, r)
+		Service: host, VirtualHost: true}.ServeHTTP(w, r)
 }
 
 type bucketHandler struct {
-	Name    string
-	Service *service
+	Name        string
+	Service     *service
+	VirtualHost bool
 }
 
 func (bucket bucketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if Debug {
 		log.Printf("bucket %s", bucket)
 	}
-	if (r.URL.Path != "/" && r.URL.Path != "/"+bucket.Name) || r.Method == "POST" {
-		objectHandler{Bucket: bucket, object: r.URL.Path}.ServeHTTP(w, r)
+	path := r.URL.Path
+	if !bucket.VirtualHost {
+		path = path[len(bucket.Name)+1:]
+	}
+	if path != "/" || r.Method == "POST" {
+		objectHandler{Bucket: bucket, object: path}.ServeHTTP(w, r)
 		return
 	}
 	switch r.Method {

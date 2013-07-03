@@ -28,12 +28,50 @@ func Test01ListBuckets(t *testing.T) {
 func Test02PutBucket(t *testing.T) {
 	doReq(t, "PUT", "/test", nil, status200)
 	doReq(t, "PUT", "/test2", nil, status200)
-	doReq(t, "GET", "/", nil, nil)
+	doReq(t, "GET", "/", nil, func(r *httptest.ResponseRecorder) error {
+		if err := status200(r); err != nil {
+			return err
+		}
+		t.Logf("service list: %q", r.Body.Bytes())
+		body := string(r.Body.Bytes())
+		for _, bn := range []string{"test", "test2"} {
+			i := strings.Index(body, "<Bucket><Name>"+bn+"</Name><CreationDate>")
+			if i < 0 {
+				return fmt.Errorf("bucket " + bn + " is missing from list after creation!")
+			}
+		}
+		return nil
+	})
+	doReq(t, "DELETE", "/test2", nil, status200)
+	doReq(t, "GET", "/", nil, func(r *httptest.ResponseRecorder) error {
+		if err := status200(r); err != nil {
+			return err
+		}
+		t.Logf("service list: %q", r.Body.Bytes())
+		body := string(r.Body.Bytes())
+		i := strings.Index(body, "<Bucket><Name>test</Name><CreationDate>")
+		if i < 0 {
+			return fmt.Errorf("bucket test is missing from list after creation!")
+		}
+		i = strings.Index(body, "<Bucket><Name>test2</Name><CreationDate>")
+		if i >= 0 {
+			return fmt.Errorf("bucket test2 is in the list after deletion!")
+		}
+		return nil
+	})
+
 }
 
 func Test03PutObject(t *testing.T) {
-    //FIXME: the resulting file name contains the bucket name - this is an error!
 	doReq(t, "PUT", "/test/objects/one", strings.NewReader("1"), status200)
+	// list bucket
+	doReq(t, "GET", "/test/", nil, func(r *httptest.ResponseRecorder) error {
+		if err := status200(r); err != nil {
+			return err
+		}
+		t.Logf("bucket list: %q", r.Body.Bytes())
+		return nil
+	})
 }
 
 func init() {
@@ -78,7 +116,7 @@ func doReq(t *testing.T, method, path string, body io.Reader, check ResponseChec
 		handlers[i].ServeHTTP(rw, req)
 		if check != nil {
 			if err = check(rw); err != nil {
-				t.Errorf("bad response: %s", err.Error())
+				t.Errorf("bad response: %s %q", err.Error(), rw.Body.Bytes())
 			}
 		}
 	}
