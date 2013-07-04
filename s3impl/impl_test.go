@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"github.com/tgulacsi/s3weed/s3impl/dirS3"
 	"github.com/tgulacsi/s3weed/s3intf"
@@ -10,6 +12,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -63,13 +67,41 @@ func Test02PutBucket(t *testing.T) {
 }
 
 func Test03PutObject(t *testing.T) {
-	doReq(t, "PUT", "/test/objects/one", strings.NewReader("1"), status200)
+	i := 0
+	files := make([]string, 0, 100)
+	filepath.Walk("/proc",
+		func(path string, info os.FileInfo, err error) error {
+			files = append(files, path)
+			i++
+			if i > 100 {
+				return io.EOF
+			}
+			//log.Printf(files[len(files)-1])
+			return nil
+		})
+	for _, fn := range files {
+		doReq(t, "PUT", "/test"+fn, strings.NewReader(fn), status200)
+		doReq(t, "GET", "/test"+fn, nil, func(r *httptest.ResponseRecorder) error {
+			if err := status200(r); err != nil {
+				return err
+			}
+			if !bytes.Equal(r.Body.Bytes(), []byte(fn)) {
+				return fmt.Errorf("stored %q, got back %q!", fn, r.Body.Bytes())
+			}
+			return nil
+		})
+	}
 	// list bucket
-	doReq(t, "GET", "/test/", nil, func(r *httptest.ResponseRecorder) error {
+	doReq(t, "GET", "/test/?delimiter=/&prefix=/proc", nil, func(r *httptest.ResponseRecorder) error {
 		if err := status200(r); err != nil {
 			return err
 		}
-		t.Logf("bucket list: %q", r.Body.Bytes())
+		body := string(r.Body.Bytes())
+		t.Logf("bucket list: %q", body)
+		i := strings.Index(body, "<Key>"+files[0]+"</Key>")
+		if i < 0 {
+			return errors.New("object (named /objects/one) is missing from bucket 'test'")
+		}
 		return nil
 	})
 }
@@ -116,7 +148,7 @@ func doReq(t *testing.T, method, path string, body io.Reader, check ResponseChec
 		handlers[i].ServeHTTP(rw, req)
 		if check != nil {
 			if err = check(rw); err != nil {
-				t.Fatalf("bad response: %s %q", err.Error(), rw.Body.Bytes())
+				t.Fatalf("bad response: %s (body:%q)", err.Error(), rw.Body.Bytes())
 			}
 		}
 	}

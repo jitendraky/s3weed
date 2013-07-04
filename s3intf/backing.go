@@ -77,7 +77,11 @@ type Storage interface {
 	// List lists a bucket, all objects Key starts with prefix, delimiter segments
 	// Key, thus the returned commonprefixes (think a generalized filepath
 	// structure, where / is the delimiter, a commonprefix is a subdir)
-	List(owner Owner, bucket, prefix, delimiter, marker string, limit int) (
+	//The prefix and delimiter parameters limit the kind of results returned by a list operation.
+	//Prefix limits results to only those keys that begin with the specified prefix,
+	//and delimiter causes list to roll up all keys that share a common prefix
+	//into a single summary list result.
+	List(owner Owner, bucket, prefix, delimiter, marker string, limit, skip int) (
 		objects []Object, commonprefixes []string, truncated bool, err error)
 	// Put puts a file as a new object into the bucket
 	Put(owner Owner, bucket, object, filename, media string, body io.Reader) error

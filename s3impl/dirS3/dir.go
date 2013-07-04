@@ -108,8 +108,82 @@ func (root hier) DelBucket(owner s3intf.Owner, bucket string) error {
 // List lists a bucket, all objects Key starts with prefix, delimiter segments
 // Key, thus the returned commonprefixes (think a generalized filepath
 // structure, where / is the delimiter, a commonprefix is a subdir)
-func (root hier) List(owner s3intf.Owner, bucket, prefix, delimiter, marker string, limit int) (
-	objects []s3intf.Object, commonprefixes []string, truncated bool, err error) {
+func (root hier) List(owner s3intf.Owner, bucket, prefix, delimiter, marker string,
+	limit, skip int) (
+	objects []s3intf.Object, commonprefixes []string,
+	truncated bool, err error) {
+	dh, e := os.Open(filepath.Join(string(root), owner.ID(), bucket))
+	if e != nil {
+		err = e
+		return
+	}
+	defer dh.Close()
+	var (
+		infos []os.FileInfo
+		early bool
+	)
+	n := 0
+	for n <= skip {
+		infos, e = dh.Readdir(limit)
+		if e != nil {
+			if e != io.EOF {
+				err = e
+				return
+			}
+			early = true
+			break
+		}
+		n += len(infos)
+	}
+	if early {
+		truncated = false
+	} else {
+		truncated = len(infos) < limit
+	}
+	//The prefix and delimiter parameters limit the kind of results returned by a list operation.
+	//Prefix limits results to only those keys that begin with the specified prefix,
+	//and delimiter causes list to roll up all keys that share a common prefix
+	//into a single summary list result.
+	var (
+		i              int
+		ok             bool
+		prefixes       map[string]bool
+		key, base, dir string
+		plen           = len(prefix)
+	)
+	if delimiter != "" {
+		prefixes = make(map[string]bool, 4)
+	} else {
+		i = -1
+	}
+	objects = make([]s3intf.Object, 0, len(infos))
+	for _, fi := range infos {
+		if key, _, _, err = decodeFilename(fi.Name()); err != nil {
+			return
+		}
+		if prefix == "" || strings.HasPrefix(key, prefix) {
+			if delimiter != "" {
+				base = key[plen:]
+				i = strings.Index(base, delimiter)
+			}
+			if i < 0 {
+				objects = append(objects, s3intf.Object{Key: key,
+					LastModified: fi.ModTime(), Size: fi.Size(), Owner: owner})
+			} else { // delimiter != "" && delimiter in key[len(prefix):]
+				dir = base[:i]
+				if _, ok = prefixes[dir]; !ok {
+					prefixes[dir] = true
+				}
+			}
+		}
+	}
+
+	if len(prefixes) > 0 {
+		commonprefixes = make([]string, 0, len(prefixes))
+		for dir = range prefixes {
+			commonprefixes = append(commonprefixes, dir)
+		}
+	}
 	return
 }
 

@@ -259,6 +259,14 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	skip := 0
+	skipkeys := r.Form.Get("skip-keys")
+	if skipkeys != "" {
+		if skip, err = strconv.Atoi(skipkeys); err != nil {
+			writeBadRequest(w, "cannot parse skip-keys value: "+err.Error())
+			return
+		}
+	}
 	prefix := r.Form.Get("prefix")
 
 	owner, err := s3intf.GetOwner(bucket.Service, r, bucket.Service.fqdn)
@@ -267,7 +275,7 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	objects, commonprefixes, truncated, err := bucket.Service.List(owner,
-		bucket.Name, prefix, delimiter, marker, limit)
+		bucket.Name, prefix, delimiter, marker, limit, skip)
 	if err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
