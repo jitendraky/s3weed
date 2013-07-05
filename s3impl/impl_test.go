@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -106,6 +107,20 @@ func Test03PutObject(t *testing.T) {
 	})
 }
 
+func Test99Delete(t *testing.T) {
+	keyID := regexp.MustCompile("<Key>[^<]+</Key>")
+	doReq(t, "GET", "/test/", nil, func(r *httptest.ResponseRecorder) error {
+		if err := status200(r); err != nil {
+			return err
+		}
+		for _, key := range keyID.FindAll(r.Body.Bytes(), -1) {
+			key = key[5 : len(key)-6]
+			t.Logf("deleting %s", key)
+		}
+		return nil
+	})
+}
+
 func init() {
 	s3srv.Debug = Debug
 	s3intf.Debug = false
@@ -159,4 +174,18 @@ func status200(r *httptest.ResponseRecorder) error {
 		return fmt.Errorf("bad response code: %d", r.Code)
 	}
 	return nil
+}
+
+//<?xml version="1.0" encoding="UTF-8"?>
+//<Error>
+//<Code>NoSuchKey</Code>
+//<Message>The resource you requested does not exist</Message>
+//<Resource>/mybucket/myfoto.jpg</Resource>
+//<RequestId>4442587FB7D0A2F9</RequestId>
+//</Error>
+type AWSError struct {
+	Error struct {
+		Code, Message, Resource string
+		RequestID               string `xml:"RequestId"`
+	}
 }

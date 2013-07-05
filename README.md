@@ -6,7 +6,7 @@ S3-like proxy for Weed-FS
 *Alpha*
 It needs some more work, test cases, and so on, and maybe the interface will change too!
 
-[![Build Status](https://secure.travis-ci.org/tgulacsi/s3weed.png)](http://travis-ci.org/tgulacsi/s3weed)
+[![Build Status](https://travis-ci.org/tgulacsi/s3weed.png)](https://travis-ci.org/tgulacsi/s3weed)
 
 # Goals
 
