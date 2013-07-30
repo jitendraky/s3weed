@@ -53,7 +53,7 @@ func (wm weedMaster) getFidURL(fid string) (url string, err error) {
 	} else {
 		vid = fid
 	}
-	resp, e := masterGet(wm.URL() + "/dir/lookup?volumeId=" + fid)
+	resp, e := masterGet(wm.URL() + "/dir/lookup?volumeId=" + vid)
 	if e == nil && resp.PublicURL == "" {
 		e = errors.New("no public url!")
 	}

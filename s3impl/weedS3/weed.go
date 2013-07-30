@@ -26,6 +26,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha1"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"hash"
@@ -136,7 +137,6 @@ func openOwner(dir string) (o wOwner, err error) {
 	o.dir = dir
 	var (
 		k, nm string
-		db    *kv.DB
 		fis   []os.FileInfo
 	)
 	for {
@@ -296,84 +296,46 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 		return
 	}
 
-	//b.db.Seek()
-	dh, e := os.Open(filepath.Join(string(root), owner.ID(), bucket))
+	enum, e := b.db.SeekFirst()
 	if e != nil {
-		err = e
+		err = fmt.Errorf("error getting first: %s", e)
 		return
 	}
-	defer dh.Close()
 	var (
-		infos []os.FileInfo
-		early bool
+		key, val []byte
+		created  time.Time
+		size     int64
 	)
-	n := 0
-	for n <= skip {
-		infos, e = dh.Readdir(limit)
-		if e != nil {
-			if e != io.EOF {
-				err = e
-				return
+	objects = make([]s3intf.Object, 0, 64)
+	f := s3intf.NewListFilter(prefix, delimiter, marker, limit, skip)
+	for {
+		if key, val, e = enum.Next(); e != nil {
+			if e == io.EOF {
+				break
 			}
-			early = true
-			break
-		}
-		n += len(infos)
-	}
-	if early {
-		truncated = false
-	} else {
-		truncated = len(infos) < limit
-	}
-	//The prefix and delimiter parameters limit the kind of results returned by a list operation.
-	//Prefix limits results to only those keys that begin with the specified prefix,
-	//and delimiter causes list to roll up all keys that share a common prefix
-	//into a single summary list result.
-	var (
-		i              int
-		ok             bool
-		prefixes       map[string]bool
-		key, base, dir string
-		plen           = len(prefix)
-	)
-	if delimiter != "" {
-		prefixes = make(map[string]bool, 4)
-	} else {
-		i = -1
-	}
-	objects = make([]s3intf.Object, 0, len(infos))
-	for _, fi := range infos {
-		if key, _, _, err = decodeFilename(fi.Name()); err != nil {
+			err = fmt.Errorf("error seeking next: %s", e)
 			return
 		}
-		if prefix == "" || strings.HasPrefix(key, prefix) {
-			if delimiter != "" {
-				base = key[plen:]
-				i = strings.Index(base, delimiter)
+		if ok, e = f.Check(string(key)); e != nil {
+			if e == io.EOF {
+				commonprefixes, truncated = f.Result()
+				return
 			}
-			if i < 0 {
-				objects = append(objects, s3intf.Object{Key: key,
-					LastModified: fi.ModTime(), Size: fi.Size(), Owner: owner})
-			} else { // delimiter != "" && delimiter in key[len(prefix):]
-				dir = base[:i]
-				if _, ok = prefixes[dir]; !ok {
-					prefixes[dir] = true
-				}
-			}
+			err = fmt.Errorf("error checking %s: %s", key, e)
+			return
+		} else if ok {
+			_, _, _, created, size = decodeVal(val)
+			objects = append(objects,
+				s3intf.Object{Key: string(key), Owner: owner,
+					LastModified: created, Size: size})
 		}
 	}
-
-	if len(prefixes) > 0 {
-		commonprefixes = make([]string, 0, len(prefixes))
-		for dir = range prefixes {
-			commonprefixes = append(commonprefixes, dir)
-		}
-	}
+	commonprefixes, truncated = f.Result()
 	return
 }
 
 // Put puts a file as a new object into the bucket
-func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, body io.Reader) error {
+func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, body io.Reader, size int64) error {
 	m.Lock()
 	o, ok := m.owners[owner.ID()]
 	m.Unlock()
@@ -396,7 +358,7 @@ func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, 
 	if err != nil {
 		return fmt.Errorf("error getting fid: %s", err)
 	}
-	err = b.db.Set([]byte(object), encodeVal(filename, media, resp.Fid))
+	err = b.db.Set([]byte(object), encodeVal(filename, media, resp.Fid, time.Now(), size))
 	if err != nil {
 		return fmt.Errorf("error storing key in db: %s", err)
 	}
@@ -407,16 +369,29 @@ func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, 
 	return b.db.Commit()
 }
 
-func encodeVal(filename, contentType, fid string) []byte {
-	return []byte(filename + "\n" + contentType + "\n" + fid)
+type valInfo struct {
+	filename, media, fid string
+	created              time.Time
+	size                 int64
 }
-func decodeVal(val []byte) (filename, contentType, fid string) {
-	i := bytes.IndexByte(val, '\n')
-	filename = string(val[:i])
-	val = val[i+1:]
-	i = bytes.IndexByte(val, '\n')
-	contentType = string(val[:i])
-	fid = string(val[i+1:])
+
+func encodeVal(filename, contentType, fid string, created time.Time, size int64) []byte {
+	buf := bytes.NewBuffer(make([]byte, len(filename)+len(contentType)+len(fid)+8+8+8))
+	enc := gob.NewEncoder(buf)
+	enc.Encode(filename)
+	enc.Encode(contentType)
+	enc.Encode(fid)
+	enc.Encode(created)
+	enc.Encode(size)
+	return buf.Bytes()
+}
+func decodeVal(val []byte) (filename, contentType, fid string, created time.Time, size int64) {
+	dec := gob.NewDecoder(bytes.NewReader(val))
+	dec.Decode(&filename)
+	dec.Decode(&contentType)
+	dec.Decode(&fid)
+	dec.Decode(&created)
+	dec.Decode(&size)
 	return
 }
 
@@ -445,7 +420,7 @@ func (m master) Get(owner s3intf.Owner, bucket, object string) (
 		return
 	}
 	var fid string
-	filename, media, fid = decodeVal(val)
+	filename, media, fid, _, _ = decodeVal(val)
 
 	body, err = m.wm.download(fid)
 	return
@@ -472,7 +447,7 @@ func (m master) Del(owner s3intf.Owner, bucket, object string) error {
 		b.db.Rollback()
 		return fmt.Errorf("cannot get %s object: %s", object, err)
 	}
-	_, _, fid := decodeVal(val)
+	_, _, fid, _, _ := decodeVal(val)
 	if err = m.wm.delete(fid); err != nil {
 		b.db.Rollback()
 		return err

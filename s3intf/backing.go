@@ -84,7 +84,7 @@ type Storage interface {
 	List(owner Owner, bucket, prefix, delimiter, marker string, limit, skip int) (
 		objects []Object, commonprefixes []string, truncated bool, err error)
 	// Put puts a file as a new object into the bucket
-	Put(owner Owner, bucket, object, filename, media string, body io.Reader) error
+	Put(owner Owner, bucket, object, filename, media string, body io.Reader, size int64) error
 	// Get retrieves an object from the bucket
 	Get(owner Owner, bucket, object string) (filename, media string, body io.ReadCloser, err error)
 	// Del deletes the object from the bucket

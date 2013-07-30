@@ -3,15 +3,35 @@ package main
 import (
 	"github.com/tgulacsi/s3weed/s3impl/dirS3"
 	"github.com/tgulacsi/s3weed/s3impl/weedS3"
+	"github.com/tgulacsi/s3weed/s3intf"
 	"github.com/tgulacsi/s3weed/s3srv"
+
+	"flag"
 	"log"
 	"net/http"
 )
 
+var (
+	dir    = flag.String("dir", "", "use dirS3 with the given dir as base (i.e. -dir=/tmp)")
+	weed   = flag.String("weed", "", "use weedS3 with the given master url (i.e. -weed=localhost:9333)")
+	weedDb = flag.String("db", "", "weedS3's db dir")
+)
+
 func main() {
 	s3srv.Debug = true
-	//impl := dirS3.NewDirS3("/tmp")
-	impl := weedS3.NewWeedS3("localhost:9333")
+	var (
+		impl s3intf.Storage
+		err  error
+	)
+	if *dir != "" {
+		impl = dirS3.NewDirS3(*dir)
+	} else if *weed != "" && *weedDb != "" {
+		if impl, err = weedS3.NewWeedS3(*weed, *weedDb); err != nil {
+			log.Fatalf("cannot create WeedS3(%s, %s): %s", *weed, *weedDb, err)
+		}
+	} else {
+		log.Fatalf("dir OR weed AND db is required!")
+	}
 	srvc := s3srv.NewService("localhost:8080", impl)
 	log.Fatal(http.ListenAndServe(":8080", srvc))
 }

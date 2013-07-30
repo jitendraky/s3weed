@@ -18,15 +18,19 @@ limitations under the License.
 package s3srv
 
 import (
+	"github.com/tgulacsi/s3weed/s3intf"
+
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
-	"github.com/tgulacsi/s3weed/s3intf"
 	"io"
+	"io/ioutil"
 	"log"
 	"mime"
 	"net/http"
 	"net/textproto"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -404,8 +408,11 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "error getting owner: "+err.Error())
 		return
 	}
-	var fn, media string
-	var body io.Reader
+	var (
+		fn, media string
+		body      io.Reader
+		size      int64
+	)
 	if r.Method == "POST" {
 		mpf, mph, err := r.FormFile("file")
 		if err != nil {
@@ -413,6 +420,8 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 		}
 		fn = mph.Filename
 		media = mph.Header.Get("Content-Type")
+		size, _ = mpf.Seek(0, 2)
+		mpf.Seek(0, 0)
 		body = mpf
 	} else {
 		media = r.Header.Get("Content-Type")
@@ -429,7 +438,7 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 	// Content-MD5 ?
 
 	if err := obj.Bucket.Service.Put(owner, obj.Bucket.Name, obj.object,
-		fn, media, body); err != nil {
+		fn, media, body, size); err != nil {
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -438,4 +447,62 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+//GetReaderSize returns a reader and the size of it
+func GetReaderSize(r io.Reader, maxMemory int64) (io.ReadCloser, int64, error) {
+	var size int64
+	var err error
+	if rs, ok := r.(io.Seeker); ok {
+		pos, err := rs.Seek(1, 0)
+		if err != nil {
+			return nil, -1, err
+		}
+		if size, err = rs.Seek(0, 2); err != nil {
+			return nil, -1, err
+		}
+		if _, err = rs.Seek(pos, 0); err != nil {
+			return nil, -1, err
+		}
+		if rc, ok := r.(io.ReadCloser); ok {
+			return rc, size, nil
+		}
+		return ioutil.NopCloser(r), size, nil
+	}
+	b := bytes.NewBuffer(nil)
+	if maxMemory <= 0 {
+		maxMemory = 10 << 20 // 10Mb
+	}
+	size, err = io.CopyN(b, r, maxMemory+1)
+	if err != nil && err != io.EOF {
+		return nil, -1, err
+	}
+	if size <= maxMemory {
+		return ioutil.NopCloser(bytes.NewReader(b.Bytes())), size, nil
+	}
+	// too big, write to disk and flush buffer
+	file, err := ioutil.TempFile("", "reader-")
+	if err != nil {
+		return nil, -1, err
+	}
+	nm := file.Name()
+	size, err = io.Copy(file, io.MultiReader(b, r))
+	if err != nil {
+		file.Close()
+		os.Remove(nm)
+		return nil, -1, err
+	}
+	file.Close()
+	fh, err := os.Open(nm)
+	return tempFile{File: fh}, size, err
+}
+
+type tempFile struct {
+	*os.File
+}
+
+func (f tempFile) Close() error {
+	nm := f.Name()
+	f.File.Close()
+	return os.Remove(nm)
 }

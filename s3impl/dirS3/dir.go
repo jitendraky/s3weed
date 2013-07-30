@@ -188,7 +188,9 @@ func (root hier) List(owner s3intf.Owner, bucket, prefix, delimiter, marker stri
 }
 
 // Put puts a file as a new object into the bucket
-func (root hier) Put(owner s3intf.Owner, bucket, object, filename, media string, body io.Reader) error {
+func (root hier) Put(owner s3intf.Owner, bucket, object, filename, media string,
+	body io.Reader, size int64) error {
+
 	fh, err := os.Create(filepath.Join(string(root), owner.ID(), bucket,
 		encodeFilename(object, filename, media)))
 	if err != nil {
