@@ -23,9 +23,9 @@ import (
 	"github.com/cznic/kv"
 	"github.com/tgulacsi/s3weed/s3intf"
 
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha1"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"hash"
@@ -50,17 +50,46 @@ type wOwner struct {
 	sync.Mutex
 }
 
+func (o wOwner) ID() string {
+	return filepath.Base(o.dir)
+}
+
+// Name returns then name of this owner
+func (o wOwner) Name() string {
+	return filepath.Base(o.dir)
+}
+
+// GetHMAC returns a HMAC initialized with the secret key
+func (o wOwner) GetHMAC(h func() hash.Hash) hash.Hash {
+	return hmac.New(h, nil)
+}
+
+// Check checks the validity of the authorization
+func (o wOwner) CalcHash(bytesToSign []byte) []byte {
+	return s3intf.CalcHash(hmac.New(sha1.New, nil), bytesToSign)
+}
+
 type master struct {
-	weedMaster string // master weed node's URL
-	baseDir    string
-	owners     map[string]wOwner
+	wm      weedMaster // master weed node's URL
+	baseDir string
+	owners  map[string]wOwner
 	sync.Mutex
+}
+
+// GetOwner returns the Owner for the accessKey - or an error
+func (m master) GetOwner(accessKey string) (s3intf.Owner, error) {
+	m.Lock()
+	defer m.Unlock()
+	if o, ok := m.owners[accessKey]; ok {
+		return o, nil
+	}
+	return nil, errors.New("owner " + accessKey + " not found")
 }
 
 // NewWeedS3 stores everything in the given master Weed-FS node
 // buckets are stored
 func NewWeedS3(masterURL, dbdir string) (s3intf.Storage, error) {
-	m := master{weedMaster: masterURL, baseDir: dbdir, owners: nil}
+	m := master{wm: newWeedMaster(masterURL), baseDir: dbdir, owners: nil}
 	dh, err := os.Open(dbdir)
 	if err != nil {
 		if _, ok := err.(*os.PathError); !ok {
@@ -267,7 +296,7 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 		return
 	}
 
-	b.db.Seek()
+	//b.db.Seek()
 	dh, e := os.Open(filepath.Join(string(root), owner.ID(), bucket))
 	if e != nil {
 		err = e
@@ -345,117 +374,108 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 
 // Put puts a file as a new object into the bucket
 func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, body io.Reader) error {
-	fh, err := os.Create(filepath.Join(string(root), owner.ID(), bucket,
-		encodeFilename(object, filename, media)))
+	m.Lock()
+	o, ok := m.owners[owner.ID()]
+	m.Unlock()
+	if !ok {
+		return errors.New("cannot find owner " + owner.ID())
+	}
+	o.Lock()
+	b, ok := o.buckets[bucket]
+	o.Unlock()
+	if !ok {
+		return errors.New("cannot find bucket " + bucket)
+	}
+
+	err := b.db.BeginTransaction()
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot start transaction: %s", err)
 	}
-	_, err = io.Copy(fh, body)
-	fh.Close()
-	return err
+	//upload
+	resp, err := m.wm.assignFid()
+	if err != nil {
+		return fmt.Errorf("error getting fid: %s", err)
+	}
+	err = b.db.Set([]byte(object), encodeVal(filename, media, resp.Fid))
+	if err != nil {
+		return fmt.Errorf("error storing key in db: %s", err)
+	}
+	if _, err = m.wm.upload(resp, filename, media, body); err != nil {
+		b.db.Rollback()
+		return fmt.Errorf("error uploading to %s: %s", resp.Fid, err)
+	}
+	return b.db.Commit()
 }
 
-var b64 = base64.URLEncoding
-
-func encodeFilename(parts ...string) string {
-	for i, s := range parts {
-		parts[i] = b64.EncodeToString([]byte(s))
-	}
-	return strings.Join(parts, "#")
+func encodeVal(filename, contentType, fid string) []byte {
+	return []byte(filename + "\n" + contentType + "\n" + fid)
 }
-
-func decodeFilename(fn string) (object, filename, media string, err error) {
-	strs := strings.SplitN(fn, "#", 3)
-	var b []byte
-	if b, err = b64.DecodeString(strs[0]); err != nil {
-		return
-	}
-	object = string(b)
-	if b, err = b64.DecodeString(strs[1]); err != nil {
-		return
-	}
-	filename = string(b)
-	if b, err = b64.DecodeString(strs[2]); err != nil {
-		return
-	}
-	media = string(b)
+func decodeVal(val []byte) (filename, contentType, fid string) {
+	i := bytes.IndexByte(val, '\n')
+	filename = string(val[:i])
+	val = val[i+1:]
+	i = bytes.IndexByte(val, '\n')
+	contentType = string(val[:i])
+	fid = string(val[i+1:])
 	return
-}
-
-func (root hier) findFile(owner s3intf.Owner, bucket, object string) (string, error) {
-	dh, err := os.Open(filepath.Join(string(root), owner.ID(), bucket))
-	if err != nil {
-		return "", err
-	}
-	defer dh.Close()
-	prefix := encodeFilename(object)
-	var names []string
-	for err == nil {
-		if names, err = dh.Readdirnames(1000); err != nil && err != io.EOF {
-			return "", err
-		}
-		for _, nm := range names {
-			if strings.HasPrefix(nm, prefix) {
-				return filepath.Join(dh.Name(), nm), nil
-			}
-		}
-	}
-	return "", nil
 }
 
 // Get retrieves an object from the bucket
 func (m master) Get(owner s3intf.Owner, bucket, object string) (
 	filename, media string, body io.ReadCloser, err error) {
-	fn, e := root.findFile(owner, bucket, object)
+
+	m.Lock()
+	o, ok := m.owners[owner.ID()]
+	m.Unlock()
+	if !ok {
+		err = errors.New("cannot find owner " + owner.ID())
+		return
+	}
+	o.Lock()
+	b, ok := o.buckets[bucket]
+	o.Unlock()
+	if !ok {
+		err = errors.New("cannot find bucket " + bucket)
+		return
+	}
+
+	val, e := b.db.Get(nil, []byte(object))
 	if e != nil {
-		err = e
+		err = fmt.Errorf("cannot get %s object: %s", object, e)
 		return
 	}
-	if fn == "" {
-		err = fmt.Errorf("no such file as %s: %s", fn, e)
-		return
-	}
-	body, e = os.Open(fn)
-	if e != nil {
-		err = e
-		return
-	}
-	_, filename, media, err = decodeFilename(filepath.Base(fn))
+	var fid string
+	filename, media, fid = decodeVal(val)
+
+	body, err = m.wm.download(fid)
 	return
 }
 
 // Del deletes the object from the bucket
 func (m master) Del(owner s3intf.Owner, bucket, object string) error {
-	fn, err := root.findFile(owner, bucket, object)
+	m.Lock()
+	o, ok := m.owners[owner.ID()]
+	m.Unlock()
+	if !ok {
+		return errors.New("cannot find owner " + owner.ID())
+	}
+	o.Lock()
+	b, ok := o.buckets[bucket]
+	o.Unlock()
+	if !ok {
+		return errors.New("cannot find bucket " + bucket)
+	}
+
+	b.db.BeginTransaction()
+	val, err := b.db.Get(nil, []byte(object))
 	if err != nil {
+		b.db.Rollback()
+		return fmt.Errorf("cannot get %s object: %s", object, err)
+	}
+	_, _, fid := decodeVal(val)
+	if err = m.wm.delete(fid); err != nil {
+		b.db.Rollback()
 		return err
 	}
-	return os.Remove(fn)
-}
-
-type user string
-
-// ID returns the ID of this owner
-func (u user) ID() string {
-	return string(u)
-}
-
-// Name returns then name of this owner
-func (u user) Name() string {
-	return string(u)
-}
-
-// GetHMAC returns a HMAC initialized with the secret key
-func (u user) GetHMAC(h func() hash.Hash) hash.Hash {
-	return hmac.New(h, nil)
-}
-
-// Check checks the validity of the authorization
-func (u user) CalcHash(bytesToSign []byte) []byte {
-	return s3intf.CalcHash(hmac.New(sha1.New, nil), bytesToSign)
-}
-
-// GetOwner returns the Owner for the accessKey - or an error
-func (root hier) GetOwner(accessKey string) (s3intf.Owner, error) {
-	return user(accessKey), nil
+	return b.db.Commit()
 }
