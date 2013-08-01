@@ -25,12 +25,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"mime"
 	"net/http"
 	"net/textproto"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +47,7 @@ type service struct {
 
 // NewService returns a new service
 func NewService(fqdn string, provider s3intf.Storage) *service {
+	log.Printf("Service on %q with %s", fqdn, provider)
 	return &service{fqdn: fqdn, Storage: provider}
 }
 
@@ -64,7 +63,7 @@ func (host *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "bad URI")
 		return
 	}
-	if host.fqdn == r.Host { //Service level
+	if stripPort(host.fqdn) == stripPort(r.Host) { //Service level
 		log.Printf("service level request, path: %s", r.URL.Path)
 		if r.URL.Path != "/" {
 			segments := strings.SplitN(r.URL.Path[1:], "/", 2)
@@ -79,7 +78,7 @@ func (host *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bucketHandler{Name: r.Host[:len(r.Host)-len(host.fqdn)-1],
+	bucketHandler{Name: r.Host[:len(stripPort(r.Host))-len(stripPort(host.fqdn))-1],
 		Service: host, VirtualHost: true}.ServeHTTP(w, r)
 }
 
@@ -91,7 +90,7 @@ type bucketHandler struct {
 
 func (bucket bucketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if Debug {
-		log.Printf("bucket %s", bucket)
+		log.Printf("bucket %s", bucket.Name)
 	}
 	path := r.URL.Path
 	if !bucket.VirtualHost {
@@ -278,9 +277,14 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "error getting owner: "+err.Error())
 		return
 	}
+	if Debug {
+		log.Printf("listing bucket %s/%s", owner.ID(), bucket.Name)
+	}
 	objects, commonprefixes, truncated, err := bucket.Service.List(owner,
 		bucket.Name, prefix, delimiter, marker, limit, skip)
 	if err != nil {
+		log.Printf("error with bucket.Service.List(%s, %s, %q, %q, %q, %d, %d): %s",
+			owner.ID(), bucket.Name, prefix, delimiter, marker, limit, skip, err)
 		if err == NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -294,12 +298,21 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/xml")
-	bw := bufio.NewWriter(w)
+	var (
+		logw *bytes.Buffer
+		bw   *bufio.Writer
+	)
+	if Debug {
+		logw = bytes.NewBuffer(nil)
+		bw = bufio.NewWriter(io.MultiWriter(w, logw))
+	} else {
+		bw = bufio.NewWriter(w)
+	}
 	bw.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>` +
 		bucket.Name + "</Name><Prefix>" + prefix + "</Prefix><Marker>" + marker +
 		"</Marker><MaxKeys>" + strconv.Itoa(limit) + "</MaxKeys><IsTruncated>" +
-		isTruncated + "</IsTruncate>")
+		isTruncated + "</IsTruncated>")
 	for _, object := range objects {
 		bw.WriteString("<Contents><Key>" + object.Key + "</Key><Size>" +
 			strconv.FormatInt(object.Size, 10) + "</Size><Owner><ID>" + object.Owner.ID() +
@@ -311,6 +324,10 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	bw.WriteString("</ListBucketResult>")
 	bw.Flush()
+
+	if logw != nil {
+		log.Printf("sent %q", logw.Bytes())
+	}
 }
 
 //This operation is useful to determine if a bucket exists and you have permission to access it.
@@ -343,7 +360,7 @@ func (bucket bucketHandler) put(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "error getting owner: "+err.Error())
 		return
 	}
-	log.Printf("creating bucket %s for %s", bucket.Name, owner)
+	log.Printf("creating bucket %s for %s", bucket.Name, owner.ID())
 	if err := bucket.Service.CreateBucket(owner, bucket.Name); err != nil {
 		writeISE(w, err.Error())
 		return
@@ -449,60 +466,6 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-//GetReaderSize returns a reader and the size of it
-func GetReaderSize(r io.Reader, maxMemory int64) (io.ReadCloser, int64, error) {
-	var size int64
-	var err error
-	if rs, ok := r.(io.Seeker); ok {
-		pos, err := rs.Seek(1, 0)
-		if err != nil {
-			return nil, -1, err
-		}
-		if size, err = rs.Seek(0, 2); err != nil {
-			return nil, -1, err
-		}
-		if _, err = rs.Seek(pos, 0); err != nil {
-			return nil, -1, err
-		}
-		if rc, ok := r.(io.ReadCloser); ok {
-			return rc, size, nil
-		}
-		return ioutil.NopCloser(r), size, nil
-	}
-	b := bytes.NewBuffer(nil)
-	if maxMemory <= 0 {
-		maxMemory = 10 << 20 // 10Mb
-	}
-	size, err = io.CopyN(b, r, maxMemory+1)
-	if err != nil && err != io.EOF {
-		return nil, -1, err
-	}
-	if size <= maxMemory {
-		return ioutil.NopCloser(bytes.NewReader(b.Bytes())), size, nil
-	}
-	// too big, write to disk and flush buffer
-	file, err := ioutil.TempFile("", "reader-")
-	if err != nil {
-		return nil, -1, err
-	}
-	nm := file.Name()
-	size, err = io.Copy(file, io.MultiReader(b, r))
-	if err != nil {
-		file.Close()
-		os.Remove(nm)
-		return nil, -1, err
-	}
-	file.Close()
-	fh, err := os.Open(nm)
-	return tempFile{File: fh}, size, err
-}
-
-type tempFile struct {
-	*os.File
-}
-
-func (f tempFile) Close() error {
-	nm := f.Name()
-	f.File.Close()
-	return os.Remove(nm)
+func stripPort(text string) string {
+	return s3intf.StripPort(text)
 }

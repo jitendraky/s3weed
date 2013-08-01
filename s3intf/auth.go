@@ -74,8 +74,8 @@ func GetOwner(b Storage, r *http.Request, serviceHost string) (owner Owner, err 
 
 	// Signature = Base64( HMAC-SHA1( YourSecretAccessKeyID, UTF-8-Encoding-Of( StringToSign ) ) );
 	/*
-		host := stripPort(r.Host)
-		serviceHost = stripPort(serviceHost)
+		host := StripPort(r.Host)
+		serviceHost = StripPort(serviceHost)
 		if len(host) > len(serviceHost) {
 			bucket = host[:len(host)-len(serviceHost)-1]
 		}
@@ -91,7 +91,7 @@ func GetOwner(b Storage, r *http.Request, serviceHost string) (owner Owner, err 
 	}
 	bts := GetBytesToSign(r, serviceHost)
 	if Debug {
-		log.Printf("%s serviceHost=%s owner=%s bts=%q", r, serviceHost, o, bts)
+		log.Printf("%s serviceHost=%s owner=%s bts=%q", r, serviceHost, o.ID(), bts)
 	}
 	if !Check(o, bts, challenge) {
 		err = errors.New("signature mismatch")
@@ -187,16 +187,16 @@ func GetBytesToSign(r *http.Request, serviceHost string) []byte {
 	}
 	// canonicalPath must start with "/" + Bucket
 	canonicalPath := ""
-	host := stripPort(r.Host)
+	host := StripPort(r.Host)
 	if Debug {
 		log.Printf("%s.Host: %s => %s, serviceHost: %s => %s", r,
-			r.Host, stripPort(r.Host),
-			serviceHost, stripPort(serviceHost))
+			r.Host, StripPort(r.Host),
+			serviceHost, StripPort(serviceHost))
 	}
+	serviceHost = StripPort(serviceHost)
 	if serviceHost == "" {
 		canonicalPath = "/" + host
 	} else {
-		serviceHost = stripPort(serviceHost)
 		if len(host) > len(serviceHost) { // bucket name is from host name
 			canonicalPath = "/" + host[:len(host)-len(serviceHost)-1]
 		}
@@ -243,7 +243,8 @@ func GetBytesToSign(r *http.Request, serviceHost string) []byte {
 	return res.Bytes()
 }
 
-func stripPort(text string) string {
+// StripPort strips the :80 ending from the string
+func StripPort(text string) string {
 	if text != "" {
 		if i := strings.Index(text, ":"); i >= 0 {
 			return text[:i]

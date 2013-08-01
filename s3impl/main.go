@@ -12,13 +12,17 @@ import (
 )
 
 var (
-	dir    = flag.String("dir", "", "use dirS3 with the given dir as base (i.e. -dir=/tmp)")
-	weed   = flag.String("weed", "", "use weedS3 with the given master url (i.e. -weed=localhost:9333)")
-	weedDb = flag.String("db", "", "weedS3's db dir")
+	dir      = flag.String("dir", "", "use dirS3 with the given dir as base (i.e. -dir=/tmp)")
+	weed     = flag.String("weed", "", "use weedS3 with the given master url (i.e. -weed=localhost:9333)")
+	weedDb   = flag.String("db", "", "weedS3's db dir")
+	hostPort = flag.String("http", ":8080", "host:port to listen on")
 )
 
 func main() {
+	flag.Parse()
+
 	s3srv.Debug = true
+    s3intf.Debug = true
 	var (
 		impl s3intf.Storage
 		err  error
@@ -32,6 +36,6 @@ func main() {
 	} else {
 		log.Fatalf("dir OR weed AND db is required!")
 	}
-	srvc := s3srv.NewService("localhost:8080", impl)
-	log.Fatal(http.ListenAndServe(":8080", srvc))
+	srvc := s3srv.NewService(*hostPort, impl)
+	log.Fatal(http.ListenAndServe(*hostPort, srvc))
 }

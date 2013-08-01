@@ -39,6 +39,8 @@ import (
 	"time"
 )
 
+var kvOptions = new(kv.Options)
+
 type wBucket struct {
 	filename string
 	created  time.Time
@@ -179,7 +181,7 @@ func openBucket(filename string) (b wBucket, err error) {
 	}
 	//b = bucket{filename: filename, created: fi.ModTime()}
 	b.filename, b.created = filename, fi.ModTime()
-	b.db, err = kv.Open(filename, nil)
+	b.db, err = kv.Open(filename, kvOptions)
 	if err != nil {
 		err = fmt.Errorf("error opening buckets db %s: %s", filename, err)
 		return
@@ -218,6 +220,8 @@ func (m master) CreateBucket(owner s3intf.Owner, bucket string) error {
 		}
 		o = wOwner{dir: dir, buckets: make(map[string]wBucket, 1)}
 		m.owners[owner.ID()] = o
+	} else if o.buckets == nil {
+		o.buckets = make(map[string]wBucket, 1)
 	}
 	o.Lock()
 	defer o.Unlock()
@@ -227,7 +231,7 @@ func (m master) CreateBucket(owner s3intf.Owner, bucket string) error {
 	}
 	b := wBucket{filename: filepath.Join(o.dir, bucket+".kv"), created: time.Now()}
 	var err error
-	if b.db, err = kv.Create(b.filename, nil); err != nil {
+	if b.db, err = kv.Create(b.filename, kvOptions); err != nil {
 		return err
 	}
 	o.buckets[bucket] = b
@@ -296,8 +300,12 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 		return
 	}
 
+	err = nil
 	enum, e := b.db.SeekFirst()
 	if e != nil {
+        if e == io.EOF { //empty
+            return
+        }
 		err = fmt.Errorf("error getting first: %s", e)
 		return
 	}
