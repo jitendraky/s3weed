@@ -22,6 +22,9 @@ import (
 
 	"bufio"
 	"bytes"
+	"crypto"
+	_ "crypto/md5"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -505,9 +508,14 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		body = r.Body
+		if body, size, err = GetReaderSize(r.Body, 1 <<20); err != nil {
+			writeError(w, &HTTPError{Code: 28, Message: "error reading request body: " + err.Error(),
+				Resource: "/" + obj.Bucket.Name + "/" + obj.object})
+		}
 	}
 	// Content-MD5 ?
+	hsh := crypto.MD5.New()
+	body = io.TeeReader(body, hsh)
 
 	if err := obj.Bucket.Service.Put(owner, obj.Bucket.Name, obj.object,
 		fn, media, body, size); err != nil {
@@ -520,6 +528,14 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 		return
 	}
+	md5Computed := hex.EncodeToString(hsh.Sum(nil))
+	md5Given := r.Header.Get("Content-MD5")
+	if md5Given != "" && md5Computed != md5Given {
+		writeError(w, &HTTPError{Code: 27, HTTPCode: http.StatusBadRequest,
+			Message:  fmt.Sprintf("got MD5=%q computed=%q", md5Given, md5Computed),
+			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
+	}
+	w.Header().Set("ETag", md5Computed)
 	w.WriteHeader(http.StatusOK)
 }
 
