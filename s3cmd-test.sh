@@ -1,4 +1,10 @@
 #!/bin/sh
+S3CMD=s3cmd
+S3HOST=s3.localhost
+BUCKET=proba
+WEED=$(dirname $0)/weed
+WEED_MASTER_PORT=9333
+
 CFG="$(dirname $0)/s3cmd-weedS3.cfg"
 if [ ! -e $CFG ]; then
     cat >$CFG <<EOF
@@ -20,8 +26,8 @@ gpg_decrypt = %(gpg_command)s -d --verbose --no-use-agent --batch --yes --passph
 gpg_encrypt = %(gpg_command)s -c --verbose --no-use-agent --batch --yes --passphrase-fd %(passphrase_fd)s -o %(output_file)s %(input_file)s
 gpg_passphrase =
 guess_mime_type = True
-host_base = s3.localhost
-host_bucket = %(bucket)s.s3.localhost
+host_base = $S3HOST
+host_bucket = %(bucket)s.$S3HOST
 human_readable_sizes = False
 invalidate_on_cf = False
 list_md5 = False
@@ -48,14 +54,69 @@ website_error =
 website_index = index.html
 EOF
 fi
-S3CMD="s3cmd --config=$CFG"
+S3CMD="$S3CMD --config=$CFG"
+S3WPID=
+WMPID=
+WVPID=
+
+ping -Anq -W1 -c1 $S3HOST
+ping -Anq -W1 -c1 ${BUCKET}.${S3HOST}
+
+if nc -z localhost 80; then
+    echo "port 80 is open"
+    #S3WPID=$(pgrep s3impl)
+else
+    mkdir -p /tmp/weedS3/AAA
+    sudo rm -f /tmp/weedS3/*/.a?????*
+    sudo $(dirname $0)/s3impl/s3impl -weed=http://localhost:$WEED_MASTER_PORT -db=/tmp/weedS3 -http=$S3HOST:80 &
+    S3WPID=$!
+fi
+
+atexit () {
+    if [ -n "$WVPID" ]; then
+        echo "killing weed volume $WVPID"
+        kill $WVPID
+    fi
+    if [ -n "$WMPID" ]; then
+        echo "killing weed master $WMPID"
+        kill $WMPID
+    fi
+    if [ -n "$S3WPID" ]; then
+        echo "killing s3impl $S3WPID"
+        sudo kill -9 $S3WPID
+    fi
+}
+trap atexit ERR
+
 set -e
-if $S3CMD ls | grep -q proba; then
+if nc -z localhost $WEED_MASTER_PORT; then
+    echo "weed master is there"
+    #WMPID=$(pgrep -f 'weed master')
+else
+    mkdir -p /tmp/weed
+    $WEED master -mdir=/tmp/weed &
+    WMPID=$!
+fi
+if wget -q -O- http://localhost:9333/dir/status | grep -q PublicUrl; then
+    echo "weed volume is there"
+    #WVPID=$(pgrep -f 'weed volume'
+else
+    mkdir -p /tmp/weed
+    $WEED volume -dir=/tmp/weed &
+    WVPID=$!
+fi
+
+
+
+if $S3CMD ls | grep -q "s3://$BUCKET"; then
     $S3CMD ls
 else
-    $S3CMD mb s3://proba
+    $S3CMD mb s3://$BUCKET
 fi
-$S3CMD put $(dirname $0)/LICENSE s3://proba
+$S3CMD put $(dirname $0)/LICENSE s3://$BUCKET
+$S3CMD ls s3://$BUCKET | grep -q LICENSE
+
+atexit
 
 #  sudo ./s3impl/s3impl -weed=http://localhost:9333 -db=/tmp/weedS3 -http=s3.localhost:80
 
