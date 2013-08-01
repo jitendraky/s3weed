@@ -130,6 +130,11 @@ func getURL(url, method string) (io.ReadCloser, error) {
 		resp *http.Response
 		msg  string
 	)
+	if url[0] == byte(':') {
+        url = "http://localhost" + url
+    } else if !(strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://")) {
+    url = "http://" + url
+    }
 	for i := 0; i < 10; i++ {
 		msg = ""
 		if method == "" {
@@ -147,7 +152,7 @@ func getURL(url, method string) (io.ReadCloser, error) {
 		}
 		if resp == nil {
 			// return nil, fmt.Errorf("nil response for %s!", url)
-			msg = fmt.Sprintf("nil response for %s!", url)
+			msg = fmt.Sprintf("nil response for %s %s!", method, url)
 		} else {
 			if err == nil {
 				if 200 <= resp.StatusCode && resp.StatusCode <= 299 {

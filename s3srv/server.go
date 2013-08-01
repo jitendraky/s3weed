@@ -31,8 +31,9 @@ import (
 	"net/textproto"
 	"strconv"
 	"strings"
-	"time"
 )
+
+const S3Date = "2006-01-02T15:04:05.007Z" //%Y-%m-%dT%H:%M:%S.000Z"
 
 // Debug prints
 var Debug bool
@@ -60,7 +61,8 @@ func (host *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("%s.ServeHTTP %s %s", host.fqdn, r.Method, r.RequestURI)
 	}
 	if r.RequestURI == "*" || r.Host == "" || r.URL == nil || r.URL.Path == "" {
-		writeBadRequest(w, "bad URI")
+		writeError(w, &HTTPError{Code: 1, HTTPCode: http.StatusBadRequest,
+			Message: "bad URI"})
 		return
 	}
 	if stripPort(host.fqdn) == stripPort(r.Host) { //Service level
@@ -71,7 +73,8 @@ func (host *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.Method != "GET" {
-			writeBadRequest(w, "only GET allowed at service level")
+			writeError(w, &HTTPError{Code: 2, HTTPCode: http.StatusBadRequest,
+				Message: "only GET allowed at service level"})
 			return
 		}
 		host.serviceGet(w, r)
@@ -112,7 +115,9 @@ func (bucket bucketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "PUT":
 		bucket.put(w, r)
 	default:
-		writeBadRequest(w, "only DELETE, GET, HEAD and PUT allowed at bucket level")
+		writeError(w, &HTTPError{Code: 3, HTTPCode: http.StatusBadRequest,
+			Message:  "only DELETE, GET, PUT and POST allowed at bucket level",
+			Resource: "/" + bucket.Name})
 	}
 }
 
@@ -133,25 +138,44 @@ func (obj objectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "PUT", "POST":
 		obj.put(w, r)
 	default:
-		writeBadRequest(w, "only DELETE, GET, PUT and POST allowed at object level")
+		writeError(w, &HTTPError{Code: 4, HTTPCode: http.StatusBadRequest,
+			Message:  "only DELETE, GET, PUT and POST allowed at object level",
+			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 	}
 }
 
-func writeBadRequest(w http.ResponseWriter, message string) {
-	log.Printf("bad request %s", message)
+func writeError(w http.ResponseWriter, err error) {
 	w.Header().Set("Connection", "close")
-	w.WriteHeader(http.StatusBadRequest)
-	if message != "" {
-		w.Write([]byte(message))
+	w.Header().Set("Content-Type", "text/xml")
+	var (
+		he *HTTPError
+		ok bool
+	)
+	if he, ok = err.(*HTTPError); !ok {
+		he.Code, he.Message = 1, err.Error()
 	}
+	if he.HTTPCode <= 0 {
+		he.HTTPCode = http.StatusInternalServerError
+	}
+	w.WriteHeader(he.HTTPCode)
+	io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>`)
+	w.Write(strconv.AppendInt(make([]byte, 0, 3), int64(he.Code), 10))
+	io.WriteString(w, `</Code><Message>`)
+	io.WriteString(w, he.Message)
+	io.WriteString(w, "</Message><Resource>")
+	io.WriteString(w, he.Resource)
+	io.WriteString(w, "</Resource></Error>")
 }
 
-func writeISE(w http.ResponseWriter, message string) {
-	w.Header().Set("Connection", "close")
-	w.WriteHeader(http.StatusInternalServerError)
-	if message != "" {
-		w.Write([]byte(message))
-	}
+type HTTPError struct {
+	Code     int
+	HTTPCode int
+	Message  string
+	Resource string
+}
+
+func (he *HTTPError) Error() string {
+	return fmt.Sprintf("(%d) %s @%s", he.Code, he.Message, he.Resource)
 }
 
 // ValidBucketName returns whether name is a valid bucket name.
@@ -194,17 +218,17 @@ func ValidBucketName(name string) bool {
 //This implementation of the GET operation returns a list of all buckets owned by the authenticated sender of the request.
 func (s *service) serviceGet(w http.ResponseWriter, r *http.Request) {
 	owner, err := s3intf.GetOwner(s, r, s.fqdn)
-	log.Printf("%#v.serviceGet owner=%s err=%s", s, owner, err)
+	log.Printf("%#v.serviceGet owner=%s err=%s", s, owner.ID(), err)
 	if err != nil {
-		writeISE(w, "error getting owner: "+err.Error())
+		writeError(w, &HTTPError{Code: 5, Message: "error getting owner: " + err.Error()})
 		return
 	} else if owner == nil {
-		writeBadRequest(w, "no owner")
+		writeError(w, &HTTPError{Code: 6, HTTPCode: 403, Message: "no owner"})
 		return
 	}
 	buckets, err := s.ListBuckets(owner)
 	if err != nil {
-		writeISE(w, err.Error())
+		writeError(w, &HTTPError{Code: 7, Message: err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "text/xml")
@@ -214,7 +238,7 @@ func (s *service) serviceGet(w http.ResponseWriter, r *http.Request) {
   <Owner><ID>` + owner.ID() + "</ID><DisplayName>" + owner.Name() + "</DisplayName></Owner><Buckets>")
 	for _, bucket := range buckets {
 		bw.WriteString("<Bucket><Name>" + bucket.Name + "</Name>")
-		bw.WriteString("<CreationDate>" + bucket.Created.Format(time.RFC3339) +
+		bw.WriteString("<CreationDate>" + bucket.Created.Format(S3Date) +
 			"</CreationDate></Bucket>")
 	}
 	bw.WriteString("</Buckets></ListAllMyBucketsResult>")
@@ -227,7 +251,7 @@ func (s *service) serviceGet(w http.ResponseWriter, r *http.Request) {
 func (bucket bucketHandler) del(w http.ResponseWriter, r *http.Request) {
 	owner, err := s3intf.GetOwner(bucket.Service, r, bucket.Service.fqdn)
 	if err != nil {
-		writeBadRequest(w, "error getting owner: "+err.Error())
+		writeError(w, &HTTPError{Code: 8, Message: "error getting owner: " + err.Error()})
 		return
 	}
 	if err := bucket.Service.DelBucket(owner, bucket.Name); err != nil {
@@ -235,7 +259,7 @@ func (bucket bucketHandler) del(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		writeISE(w, err.Error())
+		writeError(w, &HTTPError{Code: 9, Message: err.Error(), Resource: "/" + bucket.Name})
 		return
 	}
 }
@@ -249,7 +273,9 @@ func (bucket bucketHandler) del(w http.ResponseWriter, r *http.Request) {
 func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
-		writeBadRequest(w, "cannot parse form values")
+		writeError(w, &HTTPError{Code: 10, HTTPCode: http.StatusBadRequest,
+			Message:  "cannot parse form values: " + err.Error(),
+			Resource: "/" + bucket.Name})
 		return
 	}
 	delimiter := r.Form.Get("delimiter")
@@ -258,7 +284,9 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 	maxkeys := r.Form.Get("max-keys")
 	if maxkeys != "" {
 		if limit, err = strconv.Atoi(maxkeys); err != nil {
-			writeBadRequest(w, "cannot parse max-keys value: "+err.Error())
+			writeError(w, &HTTPError{Code: 11, HTTPCode: http.StatusBadRequest,
+				Message:  "cannot parse max-keys value: " + err.Error(),
+				Resource: "/" + bucket.Name})
 			return
 		}
 	}
@@ -266,7 +294,9 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 	skipkeys := r.Form.Get("skip-keys")
 	if skipkeys != "" {
 		if skip, err = strconv.Atoi(skipkeys); err != nil {
-			writeBadRequest(w, "cannot parse skip-keys value: "+err.Error())
+			writeError(w, &HTTPError{Code: 12, HTTPCode: http.StatusBadRequest,
+				Message:  "cannot parse skip-keys value: " + err.Error(),
+				Resource: "/" + bucket.Name})
 			return
 		}
 	}
@@ -274,7 +304,9 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 
 	owner, err := s3intf.GetOwner(bucket.Service, r, bucket.Service.fqdn)
 	if err != nil {
-		writeBadRequest(w, "error getting owner: "+err.Error())
+		writeError(w, &HTTPError{Code: 13,
+			Message:  "error getting owner: " + err.Error(),
+			Resource: "/" + bucket.Name})
 		return
 	}
 	if Debug {
@@ -289,7 +321,8 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		writeISE(w, err.Error())
+		writeError(w, &HTTPError{Code: 14, Resource: "/" + bucket.Name,
+			Message: "error getting list: " + err.Error()})
 		return
 	}
 	isTruncated := "false"
@@ -336,7 +369,9 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 func (bucket bucketHandler) check(w http.ResponseWriter, r *http.Request) {
 	owner, err := s3intf.GetOwner(bucket.Service, r, bucket.Service.Host())
 	if err != nil {
-		writeBadRequest(w, "error getting owner: "+err.Error())
+		writeError(w, &HTTPError{Code: 15, HTTPCode: http.StatusBadRequest,
+			Message:  "error getting owner: " + err.Error(),
+			Resource: "/" + bucket.Name})
 		return
 	}
 	if bucket.Service.CheckBucket(owner, bucket.Name) {
@@ -357,12 +392,16 @@ func (bucket bucketHandler) put(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%s.put", bucket)
 	owner, err := s3intf.GetOwner(bucket.Service, r, bucket.Service.Host())
 	if err != nil {
-		writeBadRequest(w, "error getting owner: "+err.Error())
+		writeError(w, &HTTPError{Code: 16, HTTPCode: http.StatusBadRequest,
+			Message:  "error getting owner: " + err.Error(),
+			Resource: "/" + bucket.Name})
 		return
 	}
 	log.Printf("creating bucket %s for %s", bucket.Name, owner.ID())
 	if err := bucket.Service.CreateBucket(owner, bucket.Name); err != nil {
-		writeISE(w, err.Error())
+		writeError(w, &HTTPError{Code: 17,
+			Message:  "error creating bucket: " + err.Error(),
+			Resource: "/" + bucket.Name})
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -372,11 +411,15 @@ func (bucket bucketHandler) put(w http.ResponseWriter, r *http.Request) {
 func (obj objectHandler) del(w http.ResponseWriter, r *http.Request) {
 	owner, err := s3intf.GetOwner(obj.Bucket.Service, r, obj.Bucket.Service.Host())
 	if err != nil {
-		writeBadRequest(w, "error getting owner: "+err.Error())
+		writeError(w, &HTTPError{Code: 18, HTTPCode: http.StatusBadRequest,
+			Message:  "error getting owner: " + err.Error(),
+			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 		return
 	}
 	if err := obj.Bucket.Service.Del(owner, obj.Bucket.Name, obj.object); err != nil {
-		writeISE(w, fmt.Sprintf("error deleting %s/%s: %s", obj.Bucket, obj.object, err))
+		writeError(w, &HTTPError{Code: 19,
+			Message:  "error deleting " + obj.Bucket.Name + "/" + obj.object + ": " + err.Error(),
+			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -385,7 +428,9 @@ func (obj objectHandler) del(w http.ResponseWriter, r *http.Request) {
 func (obj objectHandler) get(w http.ResponseWriter, r *http.Request) {
 	owner, err := s3intf.GetOwner(obj.Bucket.Service, r, obj.Bucket.Service.Host())
 	if err != nil {
-		writeBadRequest(w, "error getting owner: "+err.Error())
+		writeError(w, &HTTPError{Code: 20, HTTPCode: http.StatusBadRequest,
+			Message:  "error getting owner: " + err.Error(),
+			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 		return
 	}
 	fn, media, body, err := obj.Bucket.Service.Get(owner, obj.Bucket.Name, obj.object)
@@ -394,11 +439,15 @@ func (obj objectHandler) get(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		writeISE(w, fmt.Sprintf("error geting %s/%s: %s", obj.Bucket, obj.object, err))
+		writeError(w, &HTTPError{Code: 21,
+			Message:  "error getting " + obj.Bucket.Name + "/" + obj.object + ": " + err.Error(),
+			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 		return
 	}
 	if err = r.ParseForm(); err != nil {
-		writeBadRequest(w, "cannot parse form values")
+		writeError(w, &HTTPError{Code: 22, HTTPCode: http.StatusBadRequest,
+			Message:  "cannot parse form values: " + err.Error(),
+			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 		return
 	}
 	w.Header().Set("Content-Type", media)
@@ -416,13 +465,17 @@ func (obj objectHandler) get(w http.ResponseWriter, r *http.Request) {
 
 func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 	if r.Body == nil {
-		writeBadRequest(w, "nil body")
+		writeError(w, &HTTPError{Code: 23, HTTPCode: http.StatusBadRequest,
+			Message:  "nil body",
+			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 		return
 	}
 	defer r.Body.Close()
 	owner, err := s3intf.GetOwner(obj.Bucket.Service, r, obj.Bucket.Service.Host())
 	if err != nil {
-		writeBadRequest(w, "error getting owner: "+err.Error())
+		writeError(w, &HTTPError{Code: 24,
+			Message:  "error getting owner: " + err.Error(),
+			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 		return
 	}
 	var (
@@ -446,7 +499,9 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 			if _, params, err := mime.ParseMediaType(disp); err == nil {
 				fn = params["filename"]
 			} else {
-				writeBadRequest(w, "cannot parse Content-Disposition "+disp+" "+err.Error())
+				writeError(w, &HTTPError{Code: 25, HTTPCode: http.StatusBadRequest,
+					Message:  "cannot parse Content-Disposition " + disp + ": " + err.Error(),
+					Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 				return
 			}
 		}
@@ -460,7 +515,9 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		writeISE(w, fmt.Sprintf("error while storing %s in %s/%s: %s", fn, obj.Bucket, obj.object, err))
+		writeError(w, &HTTPError{Code: 26, HTTPCode: http.StatusBadRequest,
+			Message:  "error while storing " + fn + " in " + obj.Bucket.Name + "/" + obj.object + ": " + err.Error(),
+			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 		return
 	}
 	w.WriteHeader(http.StatusOK)
