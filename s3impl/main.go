@@ -1,16 +1,7 @@
 package main
 
 import (
-	"github.com/tgulacsi/s3weed/s3impl/dirS3"
-	"github.com/tgulacsi/s3weed/s3impl/weedS3"
-	"github.com/tgulacsi/s3weed/s3intf"
-	"github.com/tgulacsi/s3weed/s3srv"
-
-	"github.com/cznic/kv"
-
 	"bufio"
-	"bytes"
-	"encoding/gob"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -19,8 +10,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
-	"time"
+
+	"github.com/tgulacsi/s3weed/s3impl/dirS3"
+	"github.com/tgulacsi/s3weed/s3impl/weedS3"
+	"github.com/tgulacsi/s3weed/s3impl/weedS3/weedutils"
+	"github.com/tgulacsi/s3weed/s3intf"
+	"github.com/tgulacsi/s3weed/s3srv"
+
+	"github.com/cznic/kv"
 )
 
 var (
@@ -66,113 +63,73 @@ func main() {
 	}
 }
 
-type record struct {
-	Filename, ContentType, Fid string
-	Created                    time.Time
-	Size                       int64
-}
-
 func dumpAll(dbdir string) error {
-	dh, err := os.Open(dbdir)
-	if err != nil {
-		return fmt.Errorf("error opening %s: %s", dbdir, err)
-	}
-	defer dh.Close()
+	dirs := make(chan string)
+	go weedutils.ReadDirNames(dbdir,
+		func(fi os.FileInfo) bool {
+			return fi.IsDir()
+		}, dirs)
+
 	var (
-		kvOptions = new(kv.Options)
-		fn, bn    string
-		fi        os.FileInfo
-		db        *kv.DB
-		rec       record
+		dn  string
+		dbs chan *kv.DB
+		err error
 	)
 	bw := bufio.NewWriter(os.Stdout)
 	defer bw.Flush()
 	bw.WriteString("[")
-	enc := json.NewEncoder(bw)
-	for {
-		fis, err := dh.Readdir(1000)
-		if err != nil {
-			if err != io.EOF {
-				return fmt.Errorf("error reading dir %s: %s", dh.Name(), err)
-			}
-			break
+
+	for dn = range dirs {
+		bw.WriteString(`{"owner": "` + filepath.Base(dn) + `", `)
+		dbs = make(chan *kv.DB)
+		go dumpBuckets(bw, dbs)
+		if err = weedutils.OpenAllDb(dn, ".kv", dbs); err != nil {
+			log.Printf("error opening db: %s", err)
 		}
-		for _, fi = range fis {
-			if !fi.IsDir() {
-				continue
-			}
-			fn = filepath.Join(dbdir, fi.Name())
-			sdh, err := os.Open(fn)
-			if err != nil {
-				log.Printf("error opening %s: %s", fi.Name(), err)
-				continue
-			}
-			for {
-				sfis, err := sdh.Readdir(1000)
-				if err != nil {
-					if err == io.EOF {
-						break
-					}
-					log.Printf("error reading dir %s: %s", sdh.Name(), err)
-				}
-				bw.WriteString(`{"owner": "` + sdh.Name() + `", "buckets": [`)
-				for _, fi = range sfis {
-					if !(fi.Mode().IsRegular() && strings.HasSuffix(fi.Name(), ".kv")) {
-						continue
-					}
-					fn = filepath.Join(sdh.Name(), fi.Name())
-					if db, err = kv.Open(fn, kvOptions); err != nil {
-						log.Printf("error opening buckets db %s: %s", fn, err)
-						continue
-					}
-					bn = fi.Name()
-					bn = bn[:len(bn)-3]
-					enum, err := db.SeekFirst()
-					if err != nil {
-						if err != io.EOF {
-							log.Printf("error getting first: %s", err)
-						} else {
-							log.Printf("%s is empty!", db)
-							bw.WriteString(`{"name": "` + bn + `", "records": []},` + "\n")
-						}
-					} else {
-						bw.WriteString(`{"name": "` + bn + `", "records": [`+"\n")
-						for {
-							k, v, err := enum.Next()
-							if err != nil {
-								if err != io.EOF {
-									log.Printf("error getting next: %s", err)
-								}
-								break
-							}
-							rec.Filename, rec.ContentType, rec.Fid, rec.Created, rec.Size = decodeVal(v)
-							bw.WriteString(fmt.Sprintf(`{"object": %q, "value": `, k))
-							if err = enc.Encode(rec); err != nil {
-								log.Printf("error printing %v to json: %s", rec, err)
-								continue
-							}
-							bw.WriteString("},\n")
-						}
-						bw.WriteString("]},\n")
-					}
-					db.Close()
-				}
-				bw.WriteString("]},\n")
-				bw.Flush()
-			}
-			sdh.Close()
-		}
+		bw.Flush()
 	}
-	bw.WriteString("]\n")
+	os.Stdout.Close()
 	return nil
 }
 
-func decodeVal(val []byte) (filename, contentType, fid string, created time.Time, size int64) {
-	dec := gob.NewDecoder(bytes.NewReader(val))
-	dec.Decode(&filename)
-	dec.Decode(&contentType)
-	dec.Decode(&fid)
-	dec.Decode(&created)
-	dec.Decode(&size)
-	return
+func dumpBuckets(w io.Writer, dbs <-chan *kv.DB) {
+	io.WriteString(w, `"buckets": [`)
+	for db := range dbs {
+		dumpBucket(w, db)
+	}
+	io.WriteString(w, "],\n")
+}
+
+func dumpBucket(w io.Writer, db *kv.DB) {
+	io.WriteString(w, `{"name": "`+db.Name()+`", "records": [`)
+	enc := json.NewEncoder(w)
+	enum, err := db.SeekFirst()
+	if err != nil {
+		if err != io.EOF {
+			log.Printf("error getting first: %s", err)
+		}
+	} else {
+		var vi *weedutils.ValInfo
+		for {
+			k, v, err := enum.Next()
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("error getting next: %s", err)
+				}
+				break
+			}
+			if err = vi.Decode(v); err != nil {
+				log.Printf("error decoding %s: %s", v, err)
+				continue
+			}
+			fmt.Fprintf(w, `{"object": %q, "value": `, k)
+			if err = enc.Encode(vi); err != nil {
+				log.Printf("error printing %v to json: %s", vi, err)
+				continue
+			}
+			io.WriteString(w, "},\n")
+		}
+		io.WriteString(w, "]},\n")
+	}
+	io.WriteString(w, "]},\n")
 }

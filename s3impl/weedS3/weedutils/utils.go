@@ -1,0 +1,110 @@
+package weedutils
+
+import (
+    "encoding/gob"
+	"bytes"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/cznic/kv"
+)
+
+var kvOptions = new(kv.Options)
+
+// OpenBuckets opens all files with the given suffix in the given dir
+func OpenAllDb(dir, suffix string, dest chan<- *kv.DB) error {
+	var (
+		db  *kv.DB
+		err error
+		fn  string
+	)
+	defer close(dest)
+	return MapDirItems(dir,
+		func(fi os.FileInfo) bool {
+			return fi.Mode().IsRegular() && (suffix == "" || strings.HasSuffix(fi.Name(), suffix))
+		},
+		func(fi os.FileInfo) error {
+			fn = filepath.Join(dir, fi.Name())
+			if db, err = kv.Open(fn, kvOptions); err != nil {
+				return err
+			}
+			dest <- db
+			return nil
+		})
+}
+
+// MapDirItems calls todo for every item in dir for which check returns true
+func MapDirItems(dir string, check func(os.FileInfo) bool, todo func(os.FileInfo) error) (err error) {
+	var (
+		dh  *os.File
+		fi  os.FileInfo
+		fis []os.FileInfo
+	)
+	if dh, err = os.Open(dir); err != nil {
+		return
+	}
+	defer dh.Close()
+	for {
+		if fis, err = dh.Readdir(1000); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return
+		}
+		for _, fi = range fis {
+			if check(fi) {
+				if err = todo(fi); err != nil {
+					return
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// ReadDirItems sends the fileinfo of every item in dir for which check returns true
+func ReadDirItems(dir string, check func(os.FileInfo) bool, dest chan<- os.FileInfo) (err error) {
+	defer close(dest)
+	return MapDirItems(dir, check, func(fi os.FileInfo) error {
+		dest <- fi
+		return nil
+	})
+}
+
+// ReadDirNames sends the full filename of every item in dir for which check returns true
+func ReadDirNames(dir string, check func(os.FileInfo) bool, dest chan<- string) (err error) {
+	defer close(dest)
+	return MapDirItems(dir, check, func(fi os.FileInfo) error {
+		dest <- filepath.Join(dir, fi.Name())
+		return nil
+	})
+}
+
+// ValInfo contains the required info about a stored file
+type ValInfo struct {
+	Filename    string `json:"filename"`
+	ContentType string `json:"content-type"`
+	//Fid is the file-id
+	Fid     string    `json:"fid"`
+	Created time.Time `json:"created"`
+	Size    int64     `json:"size"`
+}
+
+// Decode decodes into the struct from bytes
+func (v *ValInfo) Decode(val []byte) error {
+	return gob.NewDecoder(bytes.NewReader(val)).Decode(v)
+}
+
+// Encode encodes the ValInfo's values into dst and returns the resulting slice.
+// dst can be nil
+func (v ValInfo) Encode(dst []byte) ([]byte, error) {
+	if dst == nil {
+		dst = make([]byte, 0, len(v.Filename)+len(v.ContentType)+len(v.Fid)+8+8+8)
+	}
+	buf := bytes.NewBuffer(dst)
+	err := gob.NewEncoder(buf).Encode(v)
+	return buf.Bytes(), err
+}

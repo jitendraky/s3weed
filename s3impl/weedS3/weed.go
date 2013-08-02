@@ -20,23 +20,22 @@ limitations under the License.
 package weedS3
 
 import (
-	"github.com/cznic/kv"
-	"github.com/tgulacsi/s3weed/s3intf"
-
-	"bytes"
 	"crypto/hmac"
 	"crypto/sha1"
-	"encoding/gob"
 	"errors"
 	"fmt"
 	"hash"
 	"io"
-	//"log"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cznic/kv"
+	"github.com/tgulacsi/s3weed/s3impl/weedS3/weedutils"
+	"github.com/tgulacsi/s3weed/s3intf"
 )
 
 var kvOptions = new(kv.Options)
@@ -92,78 +91,45 @@ func (m master) GetOwner(accessKey string) (s3intf.Owner, error) {
 // NewWeedS3 stores everything in the given master Weed-FS node
 // buckets are stored
 func NewWeedS3(masterURL, dbdir string) (s3intf.Storage, error) {
-	m := master{wm: newWeedMaster(masterURL), baseDir: dbdir, owners: nil}
+	m := master{wm: newWeedMaster(masterURL), baseDir: dbdir,
+    owners: make(map[string]wOwner, 4)}
 	dh, err := os.Open(dbdir)
 	if err != nil {
 		if _, ok := err.(*os.PathError); !ok {
 			return nil, err
 		}
 		os.MkdirAll(dbdir, 0750)
-		m.owners = make(map[string]wOwner, 2)
 	}
 	defer dh.Close()
 	var nm string
-	var fi os.FileInfo
-	for {
-		fis, err := dh.Readdir(1000)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-		if m.owners == nil {
-			m.owners = make(map[string]wOwner, len(fis))
-		}
-		for _, fi = range fis {
-			if !fi.IsDir() {
-				continue
-			}
-			nm = fi.Name()
-			if m.owners[nm], err = openOwner(filepath.Join(dbdir, nm)); err != nil {
-				return nil, err
-			}
-		}
-	}
-	return m, nil
+    err = weedutils.MapDirItems(dbdir,
+        func(fi os.FileInfo) bool {
+            return fi.Mode().IsDir()
+        },
+        func(fi os.FileInfo) error {
+            nm = fi.Name()
+            m.owners[nm], err = openOwner(filepath.Join(dbdir, nm))
+            return err
+        })
+    return m, err
 }
 
 func openOwner(dir string) (o wOwner, err error) {
-	dh, e := os.Open(dir)
-	if e != nil {
-		err = e
-		return
-	}
-	defer dh.Close()
-	//o = wOwner{dir: dir, buckets: nil}
 	o.dir = dir
-	var (
-		k, nm string
-		fis   []os.FileInfo
-	)
-	for {
-		if fis, e = dh.Readdir(1000); e != nil {
-			if e == io.EOF {
-				break
-			}
-			err = e
-			return
-		}
-		if o.buckets == nil {
-			o.buckets = make(map[string]wBucket, len(fis))
-		}
-		for _, fi := range fis {
-			nm = fi.Name()
-			if !(strings.HasSuffix(nm, ".kv") && len(nm) > 3) {
-				continue
-			}
-			k = nm[:len(nm)-3]
-			if o.buckets[k], err = openBucket(filepath.Join(dir, nm)); err != nil {
-				return
-			}
-		}
-	}
+	o.buckets = make(map[string]wBucket, 4)
 
+	var k, nm string
+
+	err = weedutils.MapDirItems(dir,
+		func(fi os.FileInfo) bool {
+			return fi.Mode().IsRegular() && strings.HasSuffix(fi.Name(), ".kv")
+		},
+		func(fi os.FileInfo) error {
+			nm = fi.Name()
+			k = nm[:len(nm)-3]
+			o.buckets[k], err = openBucket(filepath.Join(dir, nm))
+			return err
+		})
 	return
 }
 
@@ -220,8 +186,8 @@ func (m master) CreateBucket(owner s3intf.Owner, bucket string) error {
 		}
 		o = wOwner{dir: dir, buckets: make(map[string]wBucket, 1)}
 		m.owners[owner.ID()] = o
-	} else if o.buckets == nil {
-		o.buckets = make(map[string]wBucket, 1)
+		//} else if o.buckets == nil {
+		//	o.buckets = make(map[string]wBucket, 1)
 	}
 	o.Lock()
 	defer o.Unlock()
@@ -303,16 +269,15 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 	err = nil
 	enum, e := b.db.SeekFirst()
 	if e != nil {
-        if e == io.EOF { //empty
-            return
-        }
+		if e == io.EOF { //empty
+			return
+		}
 		err = fmt.Errorf("error getting first: %s", e)
 		return
 	}
 	var (
 		key, val []byte
-		created  time.Time
-		size     int64
+		vi       *weedutils.ValInfo
 	)
 	objects = make([]s3intf.Object, 0, 64)
 	f := s3intf.NewListFilter(prefix, delimiter, marker, limit, skip)
@@ -324,6 +289,7 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 			err = fmt.Errorf("error seeking next: %s", e)
 			return
 		}
+		log.Printf("key=%q", key)
 		if ok, e = f.Check(string(key)); e != nil {
 			if e == io.EOF {
 				commonprefixes, truncated = f.Result()
@@ -332,10 +298,12 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 			err = fmt.Errorf("error checking %s: %s", key, e)
 			return
 		} else if ok {
-			_, _, _, created, size = decodeVal(val)
+			if err = vi.Decode(val); err != nil {
+				return
+			}
 			objects = append(objects,
 				s3intf.Object{Key: string(key), Owner: owner,
-					LastModified: created, Size: size})
+					LastModified: vi.Created, Size: vi.Size})
 		}
 	}
 	commonprefixes, truncated = f.Result()
@@ -366,7 +334,12 @@ func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, 
 	if err != nil {
 		return fmt.Errorf("error getting fid: %s", err)
 	}
-	err = b.db.Set([]byte(object), encodeVal(filename, media, resp.Fid, time.Now(), size))
+	vi := weedutils.ValInfo{Filename: filename, ContentType: media, Fid: resp.Fid, Created: time.Now(), Size: size}
+	val, err := vi.Encode(nil)
+	if err != nil {
+		return fmt.Errorf("error serializing %v: %s", vi, err)
+	}
+	err = b.db.Set([]byte(object), val)
 	if err != nil {
 		return fmt.Errorf("error storing key in db: %s", err)
 	}
@@ -375,32 +348,6 @@ func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, 
 		return fmt.Errorf("error uploading to %s: %s", resp.Fid, err)
 	}
 	return b.db.Commit()
-}
-
-type valInfo struct {
-	filename, media, fid string
-	created              time.Time
-	size                 int64
-}
-
-func encodeVal(filename, contentType, fid string, created time.Time, size int64) []byte {
-	buf := bytes.NewBuffer(make([]byte, len(filename)+len(contentType)+len(fid)+8+8+8))
-	enc := gob.NewEncoder(buf)
-	enc.Encode(filename)
-	enc.Encode(contentType)
-	enc.Encode(fid)
-	enc.Encode(created)
-	enc.Encode(size)
-	return buf.Bytes()
-}
-func decodeVal(val []byte) (filename, contentType, fid string, created time.Time, size int64) {
-	dec := gob.NewDecoder(bytes.NewReader(val))
-	dec.Decode(&filename)
-	dec.Decode(&contentType)
-	dec.Decode(&fid)
-	dec.Decode(&created)
-	dec.Decode(&size)
-	return
 }
 
 // Get retrieves an object from the bucket
@@ -427,10 +374,14 @@ func (m master) Get(owner s3intf.Owner, bucket, object string) (
 		err = fmt.Errorf("cannot get %s object: %s", object, e)
 		return
 	}
-	var fid string
-	filename, media, fid, _, _ = decodeVal(val)
+	vi := new(weedutils.ValInfo)
+	if err = vi.Decode(val); err != nil {
+		err = fmt.Errorf("error deserializing %s: %s", val, err)
+		return
+	}
+	filename, media = vi.Filename, vi.ContentType
 
-	body, err = m.wm.download(fid)
+	body, err = m.wm.download(vi.Fid)
 	return
 }
 
@@ -455,8 +406,11 @@ func (m master) Del(owner s3intf.Owner, bucket, object string) error {
 		b.db.Rollback()
 		return fmt.Errorf("cannot get %s object: %s", object, err)
 	}
-	_, _, fid, _, _ := decodeVal(val)
-	if err = m.wm.delete(fid); err != nil {
+	vi := new(weedutils.ValInfo)
+	if err = vi.Decode(val); err != nil {
+		return fmt.Errorf("error deserializing %s: %s", val, err)
+	}
+	if err = m.wm.delete(vi.Fid); err != nil {
 		b.db.Rollback()
 		return err
 	}

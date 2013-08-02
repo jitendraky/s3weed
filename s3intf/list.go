@@ -19,6 +19,7 @@ package s3intf
 
 import (
 	"io"
+	"log"
 	"strings"
 )
 
@@ -84,6 +85,7 @@ func (f *listFilter) Check(name string) (bool, error) {
 			base = name[len(f.prefix):]
 			i = strings.Index(base, f.delimiter)
 		}
+        log.Printf("delim=%q name=%q => base=%q i=%d", f.delimiter, name, base, i)
 		if i < 0 {
 			return true, nil
 		} // delimiter != "" && delimiter in key[len(prefix):]
