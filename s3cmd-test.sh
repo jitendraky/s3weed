@@ -1,6 +1,7 @@
 #!/bin/sh
 S3CMD=s3cmd
-S3HOST=s3.localhost
+S3PORT=8081
+S3HOST=s3.localhost:$S3PORT
 BUCKET=proba
 WEED=$(dirname $0)/weed
 WEED_MASTER_PORT=9333
@@ -62,13 +63,13 @@ WVPID=
 ping -Anq -W1 -c1 $S3HOST
 ping -Anq -W1 -c1 ${BUCKET}.${S3HOST}
 
-if nc -z localhost 80; then
-    echo "port 80 is open"
+if nc -z localhost $S3PORT; then
+    echo "port $S3PORT is open"
     #S3WPID=$(pgrep s3impl)
 else
     mkdir -p /tmp/weedS3/AAA
-    sudo rm -f /tmp/weedS3/*/.a?????*
-    sudo $(dirname $0)/s3impl/s3impl -weed=http://localhost:$WEED_MASTER_PORT -db=/tmp/weedS3 -http=$S3HOST:80 &
+    rm -f /tmp/weedS3/*/.a?????*
+    $(dirname $0)/s3impl/s3impl -weed=http://localhost:$WEED_MASTER_PORT -db=/tmp/weedS3 -http=$S3HOST &
     S3WPID=$!
 fi
 
@@ -115,7 +116,7 @@ else
 fi
 $S3CMD put $(dirname $0)/LICENSE s3://$BUCKET/a/b/c
 $S3CMD ls s3://$BUCKET | grep -q LICENSE
-$S3CMD get s3://$BUCKET/a/b/c
+$S3CMD get s3://$BUCKET/a/b/c --force
 $S3CMD del s3://$BUCKET/a/b/c
 
 atexit
