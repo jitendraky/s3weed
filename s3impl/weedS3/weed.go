@@ -277,11 +277,18 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 	}
 	var (
 		key, val []byte
-		vi       *weedutils.ValInfo
+		vi       = new(weedutils.ValInfo)
 	)
 	objects = make([]s3intf.Object, 0, 64)
 	f := s3intf.NewListFilter(prefix, delimiter, marker, limit, skip)
 	for {
+		if key, val, e = enum.Next(); e != nil {
+			if e == io.EOF {
+				break
+			}
+			err = fmt.Errorf("error seeking next: %s", e)
+			return
+		}
 		log.Printf("key=%q", key)
 		if ok, e = f.Check(string(key)); e != nil {
 			if e == io.EOF {
@@ -297,13 +304,6 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 			objects = append(objects,
 				s3intf.Object{Key: string(key), Owner: owner,
 					LastModified: vi.Created, Size: vi.Size})
-		}
-		if key, val, e = enum.Next(); e != nil {
-			if e == io.EOF {
-				break
-			}
-			err = fmt.Errorf("error seeking next: %s", e)
-			return
 		}
 	}
 	commonprefixes, truncated = f.Result()

@@ -63,73 +63,100 @@ func main() {
 	}
 }
 
-func dumpAll(dbdir string) error {
+func dumpAll(dbdir string) (err error) {
 	dirs := make(chan string)
-	go weedutils.ReadDirNames(dbdir,
-		func(fi os.FileInfo) bool {
-			return fi.IsDir()
-		}, dirs)
+	go func() {
+		if err = weedutils.ReadDirNames(dbdir,
+			func(fi os.FileInfo) bool {
+				return fi.IsDir()
+			}, dirs); err != nil {
+			log.Printf("error reading %s: %s", dbdir, err)
+			return
+		}
+	}()
 
-	var (
-		dn  string
-		dbs chan *kv.DB
-		err error
-	)
+	var dn string
 	bw := bufio.NewWriter(os.Stdout)
 	defer bw.Flush()
 	bw.WriteString("[")
 
 	for dn = range dirs {
-		bw.WriteString(`{"owner": "` + filepath.Base(dn) + `", `)
-		dbs = make(chan *kv.DB)
-		go dumpBuckets(bw, dbs)
-		if err = weedutils.OpenAllDb(dn, ".kv", dbs); err != nil {
+		dbs, errch := weedutils.OpenAllDb(dn, ".kv")
+		select {
+		case err = <-errch:
 			log.Printf("error opening db: %s", err)
+			continue
+		default:
+			err = nil
+		}
+		bw.WriteString(`{"owner": "` + filepath.Base(dn) + `", `)
+		if err = dumpBuckets(bw, dbs); err != nil {
+			log.Printf("error dumping buckets: %s", err)
+		}
+		select {
+		case err = <-errch:
+			if err != nil {
+				log.Printf("error opening dbs: %s", err)
+			}
+		default:
+			err = nil
 		}
 		bw.Flush()
 	}
 	os.Stdout.Close()
+	return err
+}
+
+func dumpBuckets(w io.Writer, dbs <-chan *kv.DB) (err error) {
+	io.WriteString(w, `"buckets": [`)
+	//log.Printf("listening on %s", dbs)
+	for db := range dbs {
+		//log.Printf("calling dumpBucket(%s, %s)", w, db)
+		if err = dumpBucket(w, db); err != nil {
+			log.Printf("error dumping %s: %s", db, err)
+			db.Close()
+			return
+		}
+		db.Close()
+	}
+	io.WriteString(w, "],\n")
 	return nil
 }
 
-func dumpBuckets(w io.Writer, dbs <-chan *kv.DB) {
-	io.WriteString(w, `"buckets": [`)
-	for db := range dbs {
-		dumpBucket(w, db)
-	}
-	io.WriteString(w, "],\n")
-}
-
-func dumpBucket(w io.Writer, db *kv.DB) {
+func dumpBucket(w io.Writer, db *kv.DB) (err error) {
+	//log.Printf("dumping %s", db)
 	io.WriteString(w, `{"name": "`+db.Name()+`", "records": [`)
 	enc := json.NewEncoder(w)
-	enum, err := db.SeekFirst()
-	if err != nil {
-		if err != io.EOF {
+	enum, e := db.SeekFirst()
+	if e != nil {
+		if e != io.EOF {
+			err = e
 			log.Printf("error getting first: %s", err)
 		}
-	} else {
-		var vi *weedutils.ValInfo
-		for {
-			k, v, err := enum.Next()
-			if err != nil {
-				if err != io.EOF {
-					log.Printf("error getting next: %s", err)
-				}
-				break
+		return
+	}
+	vi := new(weedutils.ValInfo)
+	for {
+		k, v, err := enum.Next()
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("error getting next: %s", err)
 			}
-			if err = vi.Decode(v); err != nil {
-				log.Printf("error decoding %s: %s", v, err)
-				continue
-			}
-			fmt.Fprintf(w, `{"object": %q, "value": `, k)
-			if err = enc.Encode(vi); err != nil {
-				log.Printf("error printing %v to json: %s", vi, err)
-				continue
-			}
-			io.WriteString(w, "},\n")
+			break
 		}
-		io.WriteString(w, "]},\n")
+		if err = vi.Decode(v); err != nil {
+			log.Printf("error decoding %s: %s", v, err)
+			continue
+		}
+		fmt.Fprintf(w, `{"object": %q, "value": `, k)
+		if err = enc.Encode(vi); err != nil {
+			log.Printf("error printing %v to json: %s", vi, err)
+			continue
+		}
+		io.WriteString(w, "},\n")
+
 	}
 	io.WriteString(w, "]},\n")
+	io.WriteString(w, "]},\n")
+	return nil
 }

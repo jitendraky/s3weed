@@ -1,8 +1,8 @@
 package weedutils
 
 import (
-    "encoding/gob"
 	"bytes"
+	"encoding/gob"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,25 +15,33 @@ import (
 var kvOptions = new(kv.Options)
 
 // OpenBuckets opens all files with the given suffix in the given dir
-func OpenAllDb(dir, suffix string, dest chan<- *kv.DB) error {
+func OpenAllDb(dir, suffix string) (<-chan *kv.DB, <-chan error) {
+	dest := make(chan *kv.DB)
+	errch := make(chan error, 1)
 	var (
 		db  *kv.DB
 		err error
 		fn  string
 	)
-	defer close(dest)
-	return MapDirItems(dir,
-		func(fi os.FileInfo) bool {
-			return fi.Mode().IsRegular() && (suffix == "" || strings.HasSuffix(fi.Name(), suffix))
-		},
-		func(fi os.FileInfo) error {
-			fn = filepath.Join(dir, fi.Name())
-			if db, err = kv.Open(fn, kvOptions); err != nil {
-				return err
-			}
-			dest <- db
-			return nil
-		})
+	go func() {
+		if err = MapDirItems(dir,
+			func(fi os.FileInfo) bool {
+				return fi.Mode().IsRegular() && (suffix == "" || strings.HasSuffix(fi.Name(), suffix))
+			},
+			func(fi os.FileInfo) error {
+				fn = filepath.Join(dir, fi.Name())
+				if db, err = kv.Open(fn, kvOptions); err != nil {
+					return err
+				}
+				dest <- db
+				return nil
+			}); err != nil {
+			errch <- err
+		}
+		close(dest)
+		close(errch)
+	}()
+	return dest, errch
 }
 
 // MapDirItems calls todo for every item in dir for which check returns true
