@@ -84,8 +84,8 @@ func (host *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bucketHandler{Name: r.Host[:len(stripPort(r.Host))-len(stripPort(host.fqdn))-1],
-		Service: host, VirtualHost: true}.ServeHTTP(w, r)
+	bn := r.Host[:len(stripPort(r.Host))-len(stripPort(host.fqdn))-1]
+	bucketHandler{Name: bn, Service: host, VirtualHost: true}.ServeHTTP(w, r)
 }
 
 type bucketHandler struct {
@@ -105,6 +105,9 @@ func (bucket bucketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	//log.Printf("path=%s", path)
 	if !(path == "" || path == "/") || r.Method == "POST" {
+		if path[0] == byte('/') {
+			path = path[1:]
+		}
 		objectHandler{Bucket: bucket, object: path}.ServeHTTP(w, r)
 		return
 	}
@@ -508,7 +511,7 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if body, size, err = GetReaderSize(r.Body, 1 <<20); err != nil {
+		if body, size, err = GetReaderSize(r.Body, 1<<20); err != nil {
 			writeError(w, &HTTPError{Code: 28, Message: "error reading request body: " + err.Error(),
 				Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 		}
