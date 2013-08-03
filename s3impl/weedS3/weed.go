@@ -22,11 +22,11 @@ package weedS3
 import (
 	"crypto/hmac"
 	"crypto/sha1"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -278,6 +278,7 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 	var (
 		key, val []byte
 		vi       = new(weedutils.ValInfo)
+		etag     string
 	)
 	objects = make([]s3intf.Object, 0, 64)
 	f := s3intf.NewListFilter(prefix, delimiter, marker, limit, skip)
@@ -289,7 +290,7 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 			err = fmt.Errorf("error seeking next: %s", e)
 			return
 		}
-		log.Printf("key=%q", key)
+		//log.Printf("key=%q", key)
 		if ok, e = f.Check(string(key)); e != nil {
 			if e == io.EOF {
 				commonprefixes, truncated = f.Result()
@@ -301,9 +302,14 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 			if err = vi.Decode(val); err != nil {
 				return
 			}
+			if vi.MD5 != nil && len(vi.MD5) == 16 {
+				etag = hex.EncodeToString(vi.MD5)
+			} else {
+				etag = ""
+			}
 			objects = append(objects,
 				s3intf.Object{Key: string(key), Owner: owner,
-					LastModified: vi.Created, Size: vi.Size})
+					ETag: etag, LastModified: vi.Created, Size: vi.Size})
 		}
 	}
 	commonprefixes, truncated = f.Result()

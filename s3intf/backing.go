@@ -34,6 +34,7 @@ type Bucket struct {
 type Object struct {
 	Key          string
 	LastModified time.Time
+    ETag string
 	Size         int64
 	Owner        Owner
 }

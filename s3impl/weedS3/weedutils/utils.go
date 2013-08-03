@@ -99,6 +99,7 @@ type ValInfo struct {
 	Fid     string    `json:"fid"`
 	Created time.Time `json:"created"`
 	Size    int64     `json:"size"`
+	MD5     []byte    `json:"md5"`
 }
 
 // Decode decodes into the struct from bytes
@@ -110,7 +111,7 @@ func (v *ValInfo) Decode(val []byte) error {
 // dst can be nil
 func (v ValInfo) Encode(dst []byte) ([]byte, error) {
 	if dst == nil {
-		dst = make([]byte, 0, len(v.Filename)+len(v.ContentType)+len(v.Fid)+8+8+8)
+		dst = make([]byte, 0, len(v.Filename)+len(v.ContentType)+len(v.Fid)+16+8+8+8)
 	}
 	buf := bytes.NewBuffer(dst)
 	err := gob.NewEncoder(buf).Encode(v)

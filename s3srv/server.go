@@ -340,6 +340,7 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 	var (
 		logw *bytes.Buffer
 		bw   *bufio.Writer
+        etag string
 	)
 	if Debug {
 		logw = bytes.NewBuffer(nil)
@@ -353,10 +354,17 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 		"</Marker><MaxKeys>" + strconv.Itoa(limit) + "</MaxKeys><IsTruncated>" +
 		isTruncated + "</IsTruncated>")
 	for _, object := range objects {
+        etag = object.ETag
+        if etag != "" {
+            etag = "quot;" + etag + "quot;"
+        }
 		bw.WriteString("<Contents><Key>" + object.Key + "</Key><Size>" +
 			strconv.FormatInt(object.Size, 10) + "</Size><Owner><ID>" + object.Owner.ID() +
 			"</ID><DisplayName>" + object.Owner.Name() +
-			"</DisplayName></Owner></Contents>")
+			"</DisplayName></Owner>" +
+			"<LastModified>" + object.LastModified.Format(S3Date) + "</LastModified>" +
+			"<ETag>" + etag + "</ETag>" +
+			"</Contents>")
 	}
 	for _, cp := range commonprefixes {
 		bw.WriteString("<CommonPrefixes><Prefix>" + cp + "</Prefix></CommonPrefixes>")
