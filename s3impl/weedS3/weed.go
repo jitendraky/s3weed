@@ -21,12 +21,14 @@ package weedS3
 
 import (
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
 	"io"
+	//"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -317,7 +319,7 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 }
 
 // Put puts a file as a new object into the bucket
-func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, body io.Reader, size int64) error {
+func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, body io.Reader, size int64, md5hash []byte) error {
 	m.Lock()
 	o, ok := m.owners[owner.ID()]
 	m.Unlock()
@@ -340,25 +342,42 @@ func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, 
 	if err != nil {
 		return fmt.Errorf("error getting fid: %s", err)
 	}
-	vi := weedutils.ValInfo{Filename: filename, ContentType: media, Fid: resp.Fid, Created: time.Now(), Size: size}
+	vi := weedutils.ValInfo{Filename: filename, ContentType: media,
+		Fid: resp.Fid, Created: time.Now(), Size: size, MD5: md5hash}
 	val, err := vi.Encode(nil)
 	if err != nil {
 		return fmt.Errorf("error serializing %v: %s", vi, err)
 	}
-	err = b.db.Set([]byte(object), val)
-	if err != nil {
+	if err = b.db.Set([]byte(object), val); err != nil {
 		return fmt.Errorf("error storing key in db: %s", err)
+	}
+	//log.Printf("filename=%q", filename)
+	var hsh hash.Hash
+	if vi.MD5 == nil {
+		hsh = md5.New()
+		body = io.TeeReader(body, hsh)
 	}
 	if _, err = m.wm.upload(resp, filename, media, body); err != nil {
 		b.db.Rollback()
 		return fmt.Errorf("error uploading to %s: %s", resp.Fid, err)
 	}
+	if vi.MD5 == nil {
+		vi.MD5 = hsh.Sum(nil)
+		if val, err = vi.Encode(nil); err != nil {
+			return fmt.Errorf("error serializing %v: %s", vi, err)
+		}
+		if err = b.db.Set([]byte(object), val); err != nil {
+			fmt.Errorf("error storing key in db: %s", err)
+		}
+	}
+
+	//log.Printf("uploading %s [%d] resulted in %s", filename, size, resp)
 	return b.db.Commit()
 }
 
 // Get retrieves an object from the bucket
 func (m master) Get(owner s3intf.Owner, bucket, object string) (
-	filename, media string, body io.ReadCloser, err error) {
+	filename, media string, body io.ReadCloser, size int64, md5 []byte, err error) {
 
 	m.Lock()
 	o, ok := m.owners[owner.ID()]
@@ -380,12 +399,16 @@ func (m master) Get(owner s3intf.Owner, bucket, object string) (
 		err = fmt.Errorf("cannot get %s object: %s", object, e)
 		return
 	}
+	if val == nil {
+		err = s3intf.NotFound
+		return
+	}
 	vi := new(weedutils.ValInfo)
 	if err = vi.Decode(val); err != nil {
 		err = fmt.Errorf("error deserializing %s: %s", val, err)
 		return
 	}
-	filename, media = vi.Filename, vi.ContentType
+	filename, media, size, md5 = vi.Filename, vi.ContentType, vi.Size, vi.MD5
 
 	body, err = m.wm.download(vi.Fid)
 	return
@@ -407,11 +430,14 @@ func (m master) Del(owner s3intf.Owner, bucket, object string) error {
 	}
 
 	b.db.BeginTransaction()
-	val, err := b.db.Get(nil, []byte(object))
+	val, err := b.db.Extract(nil, []byte(object))
 	if err != nil {
 		b.db.Rollback()
 		return fmt.Errorf("cannot get %s object: %s", object, err)
 	}
+    if val == nil {
+        return s3intf.NotFound
+    }
 	vi := new(weedutils.ValInfo)
 	if err = vi.Decode(val); err != nil {
 		return fmt.Errorf("error deserializing %s: %s", val, err)

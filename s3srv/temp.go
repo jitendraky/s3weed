@@ -72,6 +72,80 @@ func GetReaderSize(r io.Reader, maxMemory int64) (io.ReadCloser, int64, error) {
 	return tempFile{File: fh}, size, err
 }
 
+//TeeRead writes the data from the reader into the writer, and returns a reader
+func TeeRead(w io.Writer, r io.Reader, maxMemory int64) (io.ReadCloser, error) {
+	b := bytes.NewBuffer(nil)
+	if maxMemory <= 0 {
+		maxMemory = 1 << 20 // 1Mb
+	}
+	size, err := io.CopyN(io.MultiWriter(w, b), r, maxMemory+1)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	if size <= maxMemory {
+		return ioutil.NopCloser(bytes.NewReader(b.Bytes())), nil
+	}
+	// too big, write to disk and flush buffer
+	file, err := ioutil.TempFile("", "reader-")
+	if err != nil {
+		return nil, err
+	}
+	nm := file.Name()
+	size, err = io.Copy(io.MultiWriter(w, file), io.MultiReader(b, r))
+	if err != nil {
+		file.Close()
+		os.Remove(nm)
+		return nil, err
+	}
+	file.Close()
+	fh, err := os.Open(nm)
+	return tempFile{File: fh}, err
+}
+
+// ReadSeekCloser is an io.Reader + io.Seeker + io.Closer
+type ReadSeekCloser interface {
+	io.Reader
+	io.Seeker
+	io.Closer
+}
+
+type tempBuf struct {
+	*bytes.Reader
+}
+//Close implements io.Close (NOP)
+func (b *tempBuf) Close() error { //NopCloser
+	return nil
+}
+
+func NewReadSeeker(r io.Reader, maxMemory int64) (ReadSeekCloser, error) {
+	b := bytes.NewBuffer(nil)
+	if maxMemory <= 0 {
+		maxMemory = 1 << 20 // 1Mb
+	}
+	size, err := io.CopyN(b, r, maxMemory+1)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	if size <= maxMemory {
+		return &tempBuf{bytes.NewReader(b.Bytes())}, nil
+	}
+	// too big, write to disk and flush buffer
+	file, err := ioutil.TempFile("", "reader-")
+	if err != nil {
+		return nil, err
+	}
+	nm := file.Name()
+	size, err = io.Copy(file, io.MultiReader(b, r))
+	if err != nil {
+		file.Close()
+		os.Remove(nm)
+		return nil, err
+	}
+	file.Close()
+	fh, err := os.Open(nm)
+	return tempFile{File: fh}, err
+}
+
 type tempFile struct {
 	*os.File
 }

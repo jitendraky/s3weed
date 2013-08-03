@@ -25,7 +25,6 @@ import (
 	"crypto"
 	_ "crypto/md5"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -40,9 +39,6 @@ const S3Date = "2006-01-02T15:04:05.007Z" //%Y-%m-%dT%H:%M:%S.000Z"
 
 // Debug prints
 var Debug bool
-
-// NotFound prints Not Found
-var NotFound = errors.New("Not Found")
 
 type service struct {
 	fqdn string
@@ -261,7 +257,7 @@ func (bucket bucketHandler) del(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bucket.Service.DelBucket(owner, bucket.Name); err != nil {
-		if err == NotFound {
+		if err == s3intf.NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -323,7 +319,7 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("error with bucket.Service.List(%s, %s, %q, %q, %q, %d, %d): %s",
 			owner.ID(), bucket.Name, prefix, delimiter, marker, limit, skip, err)
-		if err == NotFound {
+		if err == s3intf.NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -340,7 +336,7 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 	var (
 		logw *bytes.Buffer
 		bw   *bufio.Writer
-        etag string
+		etag string
 	)
 	if Debug {
 		logw = bytes.NewBuffer(nil)
@@ -354,10 +350,10 @@ func (bucket bucketHandler) list(w http.ResponseWriter, r *http.Request) {
 		"</Marker><MaxKeys>" + strconv.Itoa(limit) + "</MaxKeys><IsTruncated>" +
 		isTruncated + "</IsTruncated>")
 	for _, object := range objects {
-        etag = object.ETag
-        if etag != "" {
-            etag = "quot;" + etag + "quot;"
-        }
+		etag = object.ETag
+		if etag != "" {
+			etag = "quot;" + etag + "quot;"
+		}
 		bw.WriteString("<Contents><Key>" + object.Key + "</Key><Size>" +
 			strconv.FormatInt(object.Size, 10) + "</Size><Owner><ID>" + object.Owner.ID() +
 			"</ID><DisplayName>" + object.Owner.Name() +
@@ -431,10 +427,15 @@ func (obj objectHandler) del(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := obj.Bucket.Service.Del(owner, obj.Bucket.Name, obj.object); err != nil {
-		writeError(w, &HTTPError{Code: 19,
+        he := &HTTPError{Code: 19,
 			Message:  "error deleting " + obj.Bucket.Name + "/" + obj.object + ": " + err.Error(),
-			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
-		return
+			Resource: "/" + obj.Bucket.Name + "/" + obj.object}
+
+		if err == s3intf.NotFound {
+			he.HTTPCode = http.StatusNotFound
+		}
+        writeError(w,he)
+        return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -447,9 +448,10 @@ func (obj objectHandler) get(w http.ResponseWriter, r *http.Request) {
 			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 		return
 	}
-	fn, media, body, err := obj.Bucket.Service.Get(owner, obj.Bucket.Name, obj.object)
+	fn, media, body, size, md5, err := obj.Bucket.Service.Get(owner, obj.Bucket.Name, obj.object)
+	log.Printf("GETing %s/%s: %q %s", obj.Bucket.Name, obj.object, fn, err)
 	if err != nil {
-		if err == NotFound {
+		if err == s3intf.NotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -466,13 +468,18 @@ func (obj objectHandler) get(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", media)
 	w.Header().Set("Content-Disposition", "inline; filename=\""+fn+"\"")
+	w.Header().Set("Content-Length", strconv.Itoa(int(size)))
+	w.Header().Set("ETag", hex.EncodeToString(md5))
 	for k, v := range r.Form {
 		k = textproto.CanonicalMIMEHeaderKey(k)
 		switch k {
 		case "Content-Type", "Content-Language", "Expires", "Cache-Control",
-			"Content-Disposition", "Content-Encoding":
+			"Content-Disposition", "Content-Encoding", "Content-Length":
 			(map[string][]string(w.Header()))[k] = v
 		}
+	}
+	if Debug {
+		log.Printf("headers: %s", w.Header())
 	}
 	io.Copy(w, body)
 }
@@ -520,24 +527,16 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if body, size, err = GetReaderSize(r.Body, 1<<20); err != nil {
-			writeError(w, &HTTPError{Code: 28, Message: "error reading request body: " + err.Error(),
+			writeError(w, &HTTPError{Code: 28,
+				Message:  "error reading request body: " + err.Error(),
 				Resource: "/" + obj.Bucket.Name + "/" + obj.object})
 		}
 	}
-	// Content-MD5 ?
 	hsh := crypto.MD5.New()
-	body = io.TeeReader(body, hsh)
-
-	if err := obj.Bucket.Service.Put(owner, obj.Bucket.Name, obj.object,
-		fn, media, body, size); err != nil {
-		if err == NotFound {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		writeError(w, &HTTPError{Code: 26, HTTPCode: http.StatusBadRequest,
-			Message:  "error while storing " + fn + " in " + obj.Bucket.Name + "/" + obj.object + ": " + err.Error(),
+	if body, err = TeeRead(hsh, body, 1<<20); err != nil {
+		writeError(w, &HTTPError{Code: 29,
+			Message:  "error reading request body: " + err.Error(),
 			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
-		return
 	}
 	md5Computed := hex.EncodeToString(hsh.Sum(nil))
 	md5Given := r.Header.Get("Content-MD5")
@@ -545,6 +544,22 @@ func (obj objectHandler) put(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &HTTPError{Code: 27, HTTPCode: http.StatusBadRequest,
 			Message:  fmt.Sprintf("got MD5=%q computed=%q", md5Given, md5Computed),
 			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
+	}
+
+	if fn == "" {
+		log.Printf("no filename in %s", r.Header)
+		fn = md5Computed
+	}
+	if err := obj.Bucket.Service.Put(owner, obj.Bucket.Name, obj.object,
+		fn, media, body, size, hsh.Sum(nil)); err != nil {
+		if err == s3intf.NotFound {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writeError(w, &HTTPError{Code: 26, HTTPCode: http.StatusBadRequest,
+			Message:  "error while storing " + fn + " in " + obj.Bucket.Name + "/" + obj.object + ": " + err.Error(),
+			Resource: "/" + obj.Bucket.Name + "/" + obj.object})
+		return
 	}
 	w.Header().Set("ETag", md5Computed)
 	w.WriteHeader(http.StatusOK)

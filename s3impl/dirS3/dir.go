@@ -21,6 +21,7 @@ package dirS3
 
 import (
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/sha1"
 	"encoding/base64"
 	"errors"
@@ -158,7 +159,7 @@ func (root hier) List(owner s3intf.Owner, bucket, prefix, delimiter, marker stri
 	}
 	objects = make([]s3intf.Object, 0, len(infos))
 	for _, fi := range infos {
-		if key, _, _, err = decodeFilename(fi.Name()); err != nil {
+		if key, _, _, _, err = decodeFilename(fi.Name()); err != nil {
 			return
 		}
 		if prefix == "" || strings.HasPrefix(key, prefix) {
@@ -189,10 +190,10 @@ func (root hier) List(owner s3intf.Owner, bucket, prefix, delimiter, marker stri
 
 // Put puts a file as a new object into the bucket
 func (root hier) Put(owner s3intf.Owner, bucket, object, filename, media string,
-	body io.Reader, size int64) error {
+	body io.Reader, size int64, md5hash []byte) error {
 
 	fh, err := os.Create(filepath.Join(string(root), owner.ID(), bucket,
-		encodeFilename(object, filename, media)))
+		encodeFilename(object, filename, media, string(md5hash))))
 	if err != nil {
 		return err
 	}
@@ -210,8 +211,8 @@ func encodeFilename(parts ...string) string {
 	return strings.Join(parts, "#")
 }
 
-func decodeFilename(fn string) (object, filename, media string, err error) {
-	strs := strings.SplitN(fn, "#", 3)
+func decodeFilename(fn string) (object, filename, media string, md5hash []byte, err error) {
+	strs := strings.SplitN(fn, "#", 4)
 	var b []byte
 	if b, err = b64.DecodeString(strs[0]); err != nil {
 		return
@@ -225,6 +226,9 @@ func decodeFilename(fn string) (object, filename, media string, err error) {
 		return
 	}
 	media = string(b)
+	if md5hash, err = b64.DecodeString(strs[3]); err != nil {
+		return
+	}
 	return
 }
 
@@ -251,7 +255,7 @@ func (root hier) findFile(owner s3intf.Owner, bucket, object string) (string, er
 
 // Get retrieves an object from the bucket
 func (root hier) Get(owner s3intf.Owner, bucket, object string) (
-	filename, media string, body io.ReadCloser, err error) {
+	filename, media string, body io.ReadCloser, size int64, md5hash []byte, err error) {
 	fn, e := root.findFile(owner, bucket, object)
 	if e != nil {
 		err = e
@@ -261,12 +265,28 @@ func (root hier) Get(owner s3intf.Owner, bucket, object string) (
 		err = fmt.Errorf("no such file as %s: %s", fn, e)
 		return
 	}
-	body, e = os.Open(fn)
+	fh, e := os.Open(fn)
 	if e != nil {
 		err = e
 		return
 	}
-	_, filename, media, err = decodeFilename(filepath.Base(fn))
+	body = fh
+	fi, e := fh.Stat()
+	if e != nil {
+		err = e
+		return
+	}
+	size = fi.Size()
+	_, filename, media, md5hash, err = decodeFilename(filepath.Base(fn))
+    if md5hash == nil {
+	hsh := md5.New()
+	if _, e = io.Copy(hsh, fh); e != nil {
+		err = e
+		return
+	}
+	md5hash = hsh.Sum(nil)
+	fh.Seek(0, 0)
+}
 	return
 }
 

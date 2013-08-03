@@ -16,11 +16,20 @@ import (
 )
 
 // {"count":1,"fid":"3,01637037d6","url":"127.0.0.1:8080","publicUrl":"localhost:8080"}
-type weedMasterResponse struct {
+type weedAssignResponse struct {
 	Count     int    `json:"count"`
 	Fid       string `json:"fid"`
 	URL       string `json:"url"`
 	PublicURL string `json:"publicUrl"`
+}
+
+type weedLookupResponse struct {
+	Locations []wmLocation `json:"locations"`
+}
+
+type wmLocation struct {
+	PublicURL string `json:"publicUrl"`
+	URL       string `json:"url"`
 }
 
 var client = &http.Client{
@@ -38,8 +47,8 @@ func (wm weedMaster) URL() string {
 	return string(wm)
 }
 
-func (wm weedMaster) assignFid() (resp weedMasterResponse, err error) {
-	resp, err = masterGet(wm.URL() + "/dir/assign")
+func (wm weedMaster) assignFid() (resp weedAssignResponse, err error) {
+	err = masterGet(&resp, wm.URL()+"/dir/assign")
 	if err == nil && resp.Fid == "" {
 		err = errors.New("no file id!")
 	}
@@ -53,18 +62,19 @@ func (wm weedMaster) getFidURL(fid string) (url string, err error) {
 	} else {
 		vid = fid
 	}
-	resp, e := masterGet(wm.URL() + "/dir/lookup?volumeId=" + vid)
-	if e == nil && resp.PublicURL == "" {
-		e = errors.New("no public url!")
+	var resp weedLookupResponse
+	e := masterGet(&resp, wm.URL()+"/dir/lookup?volumeId="+vid)
+	if e == nil && (resp.Locations == nil || len(resp.Locations) == 0 || resp.Locations[0].PublicURL == "") {
+		e = fmt.Errorf("no public url for %s (resp=%s)", vid, resp)
 	}
 	if e != nil {
 		err = e
 		return
 	}
-	return resp.PublicURL + "/" + fid, nil
+	return resp.Locations[0].PublicURL + "/" + fid, nil
 }
 
-func masterGet(url string) (resp weedMasterResponse, err error) {
+func masterGet(resp interface{}, url string) (err error) {
 	r, e := getURL(url, "")
 	if r != nil {
 		defer r.Close()
@@ -75,15 +85,14 @@ func masterGet(url string) (resp weedMasterResponse, err error) {
 	}
 	//read JSON
 	dec := json.NewDecoder(r)
-	if err = dec.Decode(&resp); err != nil {
+	if err = dec.Decode(resp); err != nil {
 		err = fmt.Errorf("error decoding response: %s", err)
-		return
 	}
 	return
 }
 
 // Upload uploads the payload
-func (wm weedMaster) upload(resp weedMasterResponse, filename, contentType string, body io.Reader) (url string, err error) {
+func (wm weedMaster) upload(resp weedAssignResponse, filename, contentType string, body io.Reader) (url string, err error) {
 	url = "http://" + resp.PublicURL + "/" + resp.Fid
 	var respBody []byte
 	var e error
@@ -131,10 +140,10 @@ func getURL(url, method string) (io.ReadCloser, error) {
 		msg  string
 	)
 	if url[0] == byte(':') {
-        url = "http://localhost" + url
-    } else if !(strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://")) {
-    url = "http://" + url
-    }
+		url = "http://localhost" + url
+	} else if !(strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://")) {
+		url = "http://" + url
+	}
 	for i := 0; i < 10; i++ {
 		msg = ""
 		if method == "" {
@@ -195,9 +204,12 @@ func post(url, filename, contentType string, body io.Reader) (respBody []byte, e
 	req.ContentLength = int64(len(reqbuf.Bytes()))
 	req.Header.Set("MIME-Version", "1.0")
 	req.Header.Set("Content-Type", formDataContentType)
-	req.Header.Set("Accept-Encoding", "ident")
+	//req.Header.Set("Accept-Encoding", "ident")
 
 	for i := 0; i < 10; i++ {
+		log.Printf("calling %s %s %s CL=%d n=%d", req.Method, req.URL, req.Header,
+			req.ContentLength, len(reqbuf.Bytes()))
+		log.Printf("req=%q", reqbuf.Bytes())
 		resp, e = client.Do(req)
 		if e == nil {
 			break
@@ -236,7 +248,10 @@ func post(url, filename, contentType string, body io.Reader) (respBody []byte, e
 		err = fmt.Errorf("errorcode=%d message=%s", resp.StatusCode, respBody)
 		return
 	}
-	log.Printf("POST %s => %s", url, respBody)
+	log.Printf("POST %s => [%d] %v %s", url, resp.StatusCode, resp.Header, respBody)
+	if !bytes.HasPrefix(respBody, []byte(`{"size":`)) {
+		err = fmt.Errorf("no size in response %s", respBody)
+	}
 
 	return
 }
@@ -244,6 +259,7 @@ func post(url, filename, contentType string, body io.Reader) (respBody []byte, e
 func encodePayload(w io.Writer, r io.Reader, filename, contentType string) (string, int64, error) {
 	mw := multipart.NewWriter(w)
 	defer mw.Close()
+	log.Printf("fn=%q", filename)
 	fw, err := createFormFile(mw, "file", filename, contentType)
 	// fw, err := mw.CreateFormFile("file", filename)
 	if err != nil {

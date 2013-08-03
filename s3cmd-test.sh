@@ -113,8 +113,10 @@ if $S3CMD ls | grep -q "s3://$BUCKET"; then
 else
     $S3CMD mb s3://$BUCKET
 fi
-$S3CMD put $(dirname $0)/LICENSE s3://$BUCKET
+$S3CMD put $(dirname $0)/LICENSE s3://$BUCKET/a/b/c
 $S3CMD ls s3://$BUCKET | grep -q LICENSE
+$S3CMD get s3://$BUCKET/a/b/c
+$S3CMD del s3://$BUCKET/a/b/c
 
 atexit
 

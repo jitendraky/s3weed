@@ -21,8 +21,13 @@ import (
 	"bytes"
 	//"hash"
 	"io"
+    "errors"
 	"time"
 )
+
+// NotFound prints Not Found
+var NotFound = errors.New("Not Found")
+
 
 // Bucket is a holder for objects
 type Bucket struct {
@@ -85,9 +90,9 @@ type Storage interface {
 	List(owner Owner, bucket, prefix, delimiter, marker string, limit, skip int) (
 		objects []Object, commonprefixes []string, truncated bool, err error)
 	// Put puts a file as a new object into the bucket
-	Put(owner Owner, bucket, object, filename, media string, body io.Reader, size int64) error
+	Put(owner Owner, bucket, object, filename, media string, body io.Reader, size int64, md5hash []byte) error
 	// Get retrieves an object from the bucket
-	Get(owner Owner, bucket, object string) (filename, media string, body io.ReadCloser, err error)
+	Get(owner Owner, bucket, object string) (filename, media string, body io.ReadCloser, size int64, md5hash []byte, err error)
 	// Del deletes the object from the bucket
 	Del(owner Owner, bucket, object string) error
 	// GetOwner returns the Owner for the accessKey - or an error
