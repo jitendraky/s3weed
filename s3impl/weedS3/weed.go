@@ -92,7 +92,7 @@ func (m master) GetOwner(accessKey string) (s3intf.Owner, error) {
 // buckets are stored
 func NewWeedS3(masterURL, dbdir string) (s3intf.Storage, error) {
 	m := master{wm: newWeedMaster(masterURL), baseDir: dbdir,
-    owners: make(map[string]wOwner, 4)}
+		owners: make(map[string]wOwner, 4)}
 	dh, err := os.Open(dbdir)
 	if err != nil {
 		if _, ok := err.(*os.PathError); !ok {
@@ -102,16 +102,16 @@ func NewWeedS3(masterURL, dbdir string) (s3intf.Storage, error) {
 	}
 	defer dh.Close()
 	var nm string
-    err = weedutils.MapDirItems(dbdir,
-        func(fi os.FileInfo) bool {
-            return fi.Mode().IsDir()
-        },
-        func(fi os.FileInfo) error {
-            nm = fi.Name()
-            m.owners[nm], err = openOwner(filepath.Join(dbdir, nm))
-            return err
-        })
-    return m, err
+	err = weedutils.MapDirItems(dbdir,
+		func(fi os.FileInfo) bool {
+			return fi.Mode().IsDir()
+		},
+		func(fi os.FileInfo) error {
+			nm = fi.Name()
+			m.owners[nm], err = openOwner(filepath.Join(dbdir, nm))
+			return err
+		})
+	return m, err
 }
 
 func openOwner(dir string) (o wOwner, err error) {
@@ -282,13 +282,6 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 	objects = make([]s3intf.Object, 0, 64)
 	f := s3intf.NewListFilter(prefix, delimiter, marker, limit, skip)
 	for {
-		if key, val, e = enum.Next(); e != nil {
-			if e == io.EOF {
-				break
-			}
-			err = fmt.Errorf("error seeking next: %s", e)
-			return
-		}
 		log.Printf("key=%q", key)
 		if ok, e = f.Check(string(key)); e != nil {
 			if e == io.EOF {
@@ -304,6 +297,13 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 			objects = append(objects,
 				s3intf.Object{Key: string(key), Owner: owner,
 					LastModified: vi.Created, Size: vi.Size})
+		}
+		if key, val, e = enum.Next(); e != nil {
+			if e == io.EOF {
+				break
+			}
+			err = fmt.Errorf("error seeking next: %s", e)
+			return
 		}
 	}
 	commonprefixes, truncated = f.Result()
