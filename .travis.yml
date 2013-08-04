@@ -6,4 +6,4 @@ before_install:
     - cat /proc/sys/kernel/osrelease
 install:
     - go get github.com/cznic/kv
-    - patch /home/travis/gopath/src/github.com/cznic/fileutil/fileutil_linux.go fileutil_linux.go.patch
+    - patch -Nu /home/travis/gopath/src/github.com/cznic/fileutil/fileutil_linux.go fileutil_linux.go.patch

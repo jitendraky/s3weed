@@ -295,8 +295,7 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 		//log.Printf("key=%q", key)
 		if ok, e = f.Check(string(key)); e != nil {
 			if e == io.EOF {
-				commonprefixes, truncated = f.Result()
-				return
+				break
 			}
 			err = fmt.Errorf("error checking %s: %s", key, e)
 			return
@@ -435,9 +434,9 @@ func (m master) Del(owner s3intf.Owner, bucket, object string) error {
 		b.db.Rollback()
 		return fmt.Errorf("cannot get %s object: %s", object, err)
 	}
-    if val == nil {
-        return s3intf.NotFound
-    }
+	if val == nil {
+		return s3intf.NotFound
+	}
 	vi := new(weedutils.ValInfo)
 	if err = vi.Decode(val); err != nil {
 		return fmt.Errorf("error deserializing %s: %s", val, err)

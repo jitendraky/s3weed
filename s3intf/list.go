@@ -58,7 +58,9 @@ type listFilter struct {
 func (f *listFilter) Check(name string) (bool, error) {
 	n := f.n
 	f.n++
-	log.Printf("Check(%s) n=%d skip=%d limit=%d", name, n, f.skip, f.limit)
+	if Debug {
+        log.Printf("Check(%s) n=%d skip=%d limit=%d", name, n, f.skip, f.limit)
+    }
 	if n < f.skip {
 		return false, nil
 	}
@@ -86,7 +88,9 @@ func (f *listFilter) Check(name string) (bool, error) {
 			base = name[len(f.prefix):]
 			i = strings.Index(base, f.delimiter)
 		}
+        if Debug{
 		log.Printf("delim=%q name=%q => base=%q i=%d", f.delimiter, name, base, i)
+    }
 		if i < 0 {
 			return true, nil
 		} // delimiter != "" && delimiter in key[len(prefix):]
