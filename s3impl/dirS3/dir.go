@@ -216,14 +216,14 @@ func (root hier) findFile(owner s3intf.Owner, bucket, object string) (string, er
 		return "", err
 	}
 	defer dh.Close()
-	prefix := encodeFilename(object)
+	prefix := encodeFilename(object, "")
 	var names []string
 	for err == nil {
 		if names, err = dh.Readdirnames(1000); err != nil && err != io.EOF {
 			return "", err
 		}
 		for _, nm := range names {
-			if strings.HasPrefix(nm, prefix) {
+			if strings.HasPrefix(nm, prefix){
 				return filepath.Join(dh.Name(), nm), nil
 			}
 		}

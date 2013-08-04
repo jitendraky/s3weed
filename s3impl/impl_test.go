@@ -109,18 +109,20 @@ func Test03PutObject(t *testing.T) {
 		})
 	}
 	// list bucket
-	doReq(t, "GET", "/test/?delimiter=/&prefix=/proc", nil, func(r *httptest.ResponseRecorder) error {
-		if err := status200(r); err != nil {
-			return err
-		}
-		body := string(r.Body.Bytes())
-		t.Logf("bucket list: %q", body)
-		i := strings.Index(body, "<Key>"+files[0]+"</Key>")
-		if i < 0 {
-			return errors.New("object (named /objects/one) is missing from bucket 'test'")
-		}
-		return nil
-	})
+	doReq(t, "GET", "/test/?delimiter=/&prefix=proc", nil,
+		func(r *httptest.ResponseRecorder) error {
+			if err := status200(r); err != nil {
+				return err
+			}
+			body := string(r.Body.Bytes())
+			t.Logf("bucket list: %q", body)
+			i := strings.Index(body, "<Key>"+files[0][1:]+"</Key>")
+			if i < 0 {
+				return errors.New("object (named " + files[0][1:] +
+					") is missing from bucket 'test'")
+			}
+			return nil
+		})
 }
 
 func Test99Delete(t *testing.T) {
@@ -179,7 +181,8 @@ func doReq(t *testing.T, method, path string, body io.Reader, check ResponseChec
 		handlers[i].ServeHTTP(rw, req)
 		if check != nil {
 			if err = check(rw); err != nil {
-				t.Fatalf("bad response: %s (body:%q)", err.Error(), rw.Body.Bytes())
+				t.Fatalf("bad response for %s %s: %s (body:%q)", method, path,
+					err.Error(), rw.Body.Bytes())
 			}
 		}
 	}
