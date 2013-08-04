@@ -35,6 +35,7 @@ import (
 	"strings"
 )
 
+// S3Date is a format for S3
 const S3Date = "2006-01-02T15:04:05.007Z" //%Y-%m-%dT%H:%M:%S.000Z"
 
 // Debug prints
@@ -169,6 +170,7 @@ func writeError(w http.ResponseWriter, err error) {
 	io.WriteString(w, "</Resource></Error>")
 }
 
+// HTTPError is an error which contains the Resource and HTTPCode, too
 type HTTPError struct {
 	Code     int
 	HTTPCode int
@@ -176,6 +178,7 @@ type HTTPError struct {
 	Resource string
 }
 
+// Error implements error.Error (returns the string representation)
 func (he *HTTPError) Error() string {
 	return fmt.Sprintf("(%d) %s @%s", he.Code, he.Message, he.Resource)
 }
@@ -427,15 +430,15 @@ func (obj objectHandler) del(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := obj.Bucket.Service.Del(owner, obj.Bucket.Name, obj.object); err != nil {
-        he := &HTTPError{Code: 19,
+		he := &HTTPError{Code: 19,
 			Message:  "error deleting " + obj.Bucket.Name + "/" + obj.object + ": " + err.Error(),
 			Resource: "/" + obj.Bucket.Name + "/" + obj.object}
 
 		if err == s3intf.NotFound {
 			he.HTTPCode = http.StatusNotFound
 		}
-        writeError(w,he)
-        return
+		writeError(w, he)
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

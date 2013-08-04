@@ -117,6 +117,7 @@ func (b *tempBuf) Close() error { //NopCloser
 	return nil
 }
 
+// NewReadSeeker returns a copy of the r io.Reader which can be Seeken and closed.
 func NewReadSeeker(r io.Reader, maxMemory int64) (ReadSeekCloser, error) {
 	b := bytes.NewBuffer(nil)
 	if maxMemory <= 0 {

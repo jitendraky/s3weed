@@ -31,7 +31,7 @@ import (
 
 var kvOptions = new(kv.Options)
 
-// OpenBuckets opens all files with the given suffix in the given dir
+// OpenAllDb opens all files with the given suffix in the given dir
 func OpenAllDb(dir, suffix string) (<-chan *kv.DB, <-chan error) {
 	dest := make(chan *kv.DB)
 	errch := make(chan error, 1)
