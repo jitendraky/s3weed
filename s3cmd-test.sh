@@ -119,6 +119,11 @@ $S3CMD ls s3://$BUCKET | grep -q LICENSE
 $S3CMD get s3://$BUCKET/a/b/c --force
 $S3CMD del s3://$BUCKET/a/b/c
 
+find /usr/share/doc -type f -readable -size +1b 2>/dev/null | head -n 10 \
+    | while read fn; do
+    $S3CMD put $fn s3://${BUCKET}$fn
+done
+
 atexit
 
 #  sudo ./s3impl/s3impl -weed=http://localhost:9333 -db=/tmp/weedS3 -http=s3.localhost:80

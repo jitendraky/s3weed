@@ -1,4 +1,6 @@
 language: go
 go:
-    - 1.1
+    - 1.1.1
     - tip
+install:
+    - go get -i github.com/cznic/fileutil
