@@ -4,3 +4,4 @@ go:
     - tip
 install:
     - go get -u github.com/cznic/fileutil
+    - go get github.com/cznic/kv
