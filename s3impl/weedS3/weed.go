@@ -38,6 +38,7 @@ import (
 	"github.com/cznic/kv"
 	"github.com/tgulacsi/s3weed/s3impl/weedS3/weedutils"
 	"github.com/tgulacsi/s3weed/s3intf"
+	"github.com/tgulacsi/weed-client"
 )
 
 var kvOptions = new(kv.Options)
@@ -74,7 +75,7 @@ func (o wOwner) CalcHash(bytesToSign []byte) []byte {
 }
 
 type master struct {
-	wm      weedMaster // master weed node's URL
+	wm      weed.WeedClient // master weed node's URL
 	baseDir string
 	owners  map[string]wOwner
 	sync.Mutex
@@ -93,7 +94,7 @@ func (m master) GetOwner(accessKey string) (s3intf.Owner, error) {
 // NewWeedS3 stores everything in the given master Weed-FS node
 // buckets are stored
 func NewWeedS3(masterURL, dbdir string) (s3intf.Storage, error) {
-	m := master{wm: newWeedMaster(masterURL), baseDir: dbdir,
+	m := master{wm: weed.NewWeedClient(masterURL), baseDir: dbdir,
 		owners: make(map[string]wOwner, 4)}
 	dh, err := os.Open(dbdir)
 	if err != nil {
@@ -337,12 +338,12 @@ func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, 
 		return fmt.Errorf("cannot start transaction: %s", err)
 	}
 	//upload
-	resp, err := m.wm.assignFid()
+	fid, publicURL, err := m.wm.AssignFid()
 	if err != nil {
 		return fmt.Errorf("error getting fid: %s", err)
 	}
 	vi := weedutils.ValInfo{Filename: filename, ContentType: media,
-		Fid: resp.Fid, Created: time.Now(), Size: size, MD5: md5hash}
+		Fid: fid, Created: time.Now(), Size: size, MD5: md5hash}
 	val, err := vi.Encode(nil)
 	if err != nil {
 		return fmt.Errorf("error serializing %v: %s", vi, err)
@@ -356,9 +357,9 @@ func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, 
 		hsh = md5.New()
 		body = io.TeeReader(body, hsh)
 	}
-	if _, err = m.wm.upload(resp, filename, media, body); err != nil {
+	if _, err = m.wm.UploadAssigned(fid, publicURL, filename, media, body); err != nil {
 		b.db.Rollback()
-		return fmt.Errorf("error uploading to %s: %s", resp.Fid, err)
+		return fmt.Errorf("error uploading to %s: %s", fid, err)
 	}
 	if vi.MD5 == nil {
 		vi.MD5 = hsh.Sum(nil)
@@ -409,7 +410,7 @@ func (m master) Get(owner s3intf.Owner, bucket, object string) (
 	}
 	filename, media, size, md5 = vi.Filename, vi.ContentType, vi.Size, vi.MD5
 
-	body, err = m.wm.download(vi.Fid)
+	body, err = m.wm.Download(vi.Fid)
 	return
 }
 
@@ -441,7 +442,7 @@ func (m master) Del(owner s3intf.Owner, bucket, object string) error {
 	if err = vi.Decode(val); err != nil {
 		return fmt.Errorf("error deserializing %s: %s", val, err)
 	}
-	if err = m.wm.delete(vi.Fid); err != nil {
+	if err = m.wm.Delete(vi.Fid); err != nil {
 		b.db.Rollback()
 		return err
 	}
