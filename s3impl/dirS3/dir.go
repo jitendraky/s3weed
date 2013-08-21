@@ -223,7 +223,7 @@ func (root hier) findFile(owner s3intf.Owner, bucket, object string) (string, er
 			return "", err
 		}
 		for _, nm := range names {
-			if strings.HasPrefix(nm, prefix){
+			if strings.HasPrefix(nm, prefix) {
 				return filepath.Join(dh.Name(), nm), nil
 			}
 		}

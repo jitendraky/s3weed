@@ -41,7 +41,10 @@ import (
 	"github.com/tgulacsi/weed-client"
 )
 
-var kvOptions = new(kv.Options)
+// kvOptions returns the usable kv.Options - according to cnic, reuse may be unsafe
+func kvOptions() *kv.Options {
+	return new(kv.Options)
+}
 
 type wBucket struct {
 	filename string
@@ -150,7 +153,7 @@ func openBucket(filename string) (b wBucket, err error) {
 	}
 	//b = bucket{filename: filename, created: fi.ModTime()}
 	b.filename, b.created = filename, fi.ModTime()
-	b.db, err = kv.Open(filename, kvOptions)
+	b.db, err = kv.Open(filename, kvOptions())
 	if err != nil {
 		err = fmt.Errorf("error opening buckets db %s: %s", filename, err)
 		return
@@ -200,7 +203,7 @@ func (m master) CreateBucket(owner s3intf.Owner, bucket string) error {
 	}
 	b := wBucket{filename: filepath.Join(o.dir, bucket+".kv"), created: time.Now()}
 	var err error
-	if b.db, err = kv.Create(b.filename, kvOptions); err != nil {
+	if b.db, err = kv.Create(b.filename, kvOptions()); err != nil {
 		return err
 	}
 	o.buckets[bucket] = b

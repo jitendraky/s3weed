@@ -20,14 +20,13 @@ package s3intf
 import (
 	"bytes"
 	//"hash"
+	"errors"
 	"io"
-    "errors"
 	"time"
 )
 
 // NotFound prints Not Found
 var NotFound = errors.New("Not Found")
-
 
 // Bucket is a holder for objects
 type Bucket struct {
@@ -39,7 +38,7 @@ type Bucket struct {
 type Object struct {
 	Key          string
 	LastModified time.Time
-    ETag string
+	ETag         string
 	Size         int64
 	Owner        Owner
 }

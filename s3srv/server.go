@@ -23,7 +23,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto"
-	_ "crypto/md5"
+	_ "crypto/md5" // for crypto.MD5
 	"encoding/hex"
 	"fmt"
 	"io"

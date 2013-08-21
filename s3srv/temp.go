@@ -112,6 +112,7 @@ type ReadSeekCloser interface {
 type tempBuf struct {
 	*bytes.Reader
 }
+
 //Close implements io.Close (NOP)
 func (b *tempBuf) Close() error { //NopCloser
 	return nil
