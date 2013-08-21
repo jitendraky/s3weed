@@ -36,8 +36,8 @@ sizes, if this would be a proper implementation, not just a toy!
 ## `s3impl/weedS3`
 is an implementation which stores metadata
 (object name - file id (and file name, size and md5)) locally in
-`basedir/owner/bucket.kv` files (using [kv](github.com/cznic/kv) for database),
-and uses [Weed-FS](code.google.com/p/weed-fs) for file data storage.
+`basedir/owner/bucket.kv` files (using [kv](https://github.com/cznic/kv) for database),
+and uses [Weed-FS](https://code.google.com/p/weed-fs) for file data storage.
 
 This does not have any authentication (**uses empty password**) ATM.
 
