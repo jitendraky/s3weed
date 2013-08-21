@@ -322,37 +322,49 @@ func (m master) List(owner s3intf.Owner, bucket, prefix, delimiter, marker strin
 }
 
 // Put puts a file as a new object into the bucket
-func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, body io.Reader, size int64, md5hash []byte) error {
+func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string,
+	body io.Reader, size int64, md5hash []byte) (
+	err error) {
+
 	m.Lock()
 	o, ok := m.owners[owner.ID()]
 	m.Unlock()
 	if !ok {
-		return errors.New("cannot find owner " + owner.ID())
+		err = errors.New("cannot find owner " + owner.ID())
+		return
 	}
 	o.Lock()
 	b, ok := o.buckets[bucket]
 	o.Unlock()
 	if !ok {
-		return errors.New("cannot find bucket " + bucket)
+		err = errors.New("cannot find bucket " + bucket)
+		return
 	}
 
-	err := b.db.BeginTransaction()
-	if err != nil {
+	if err = b.db.BeginTransaction(); err != nil {
 		return fmt.Errorf("cannot start transaction: %s", err)
 	}
+	defer func() {
+		if err != nil {
+			b.db.Rollback()
+		}
+	}()
 	//upload
 	fid, publicURL, err := m.wm.AssignFid()
 	if err != nil {
-		return fmt.Errorf("error getting fid: %s", err)
+		err = fmt.Errorf("error getting fid: %s", err)
+		return
 	}
 	vi := weedutils.ValInfo{Filename: filename, ContentType: media,
 		Fid: fid, Created: time.Now(), Size: size, MD5: md5hash}
 	val, err := vi.Encode(nil)
 	if err != nil {
-		return fmt.Errorf("error serializing %v: %s", vi, err)
+		err = fmt.Errorf("error serializing %v: %s", vi, err)
+		return
 	}
 	if err = b.db.Set([]byte(object), val); err != nil {
-		return fmt.Errorf("error storing key in db: %s", err)
+		err = fmt.Errorf("error storing key in db: %s", err)
+		return
 	}
 	//log.Printf("filename=%q", filename)
 	var hsh hash.Hash
@@ -362,19 +374,23 @@ func (m master) Put(owner s3intf.Owner, bucket, object, filename, media string, 
 	}
 	if _, err = m.wm.UploadAssigned(fid, publicURL, filename, media, body); err != nil {
 		b.db.Rollback()
-		return fmt.Errorf("error uploading to %s: %s", fid, err)
+		err = fmt.Errorf("error uploading to %s: %s", fid, err)
+		return
 	}
 	if vi.MD5 == nil {
 		vi.MD5 = hsh.Sum(nil)
 		if val, err = vi.Encode(nil); err != nil {
-			return fmt.Errorf("error serializing %v: %s", vi, err)
+			err = fmt.Errorf("error serializing %v: %s", vi, err)
+			return
 		}
 		if err = b.db.Set([]byte(object), val); err != nil {
-			fmt.Errorf("error storing key in db: %s", err)
+			err = fmt.Errorf("error storing key in db: %s", err)
+			return
 		}
 	}
 
 	//log.Printf("uploading %s [%d] resulted in %s", filename, size, resp)
+	err = nil
 	return b.db.Commit()
 }
 
@@ -418,7 +434,7 @@ func (m master) Get(owner s3intf.Owner, bucket, object string) (
 }
 
 // Del deletes the object from the bucket
-func (m master) Del(owner s3intf.Owner, bucket, object string) error {
+func (m master) Del(owner s3intf.Owner, bucket, object string) (err error) {
 	m.Lock()
 	o, ok := m.owners[owner.ID()]
 	m.Unlock()
@@ -432,22 +448,32 @@ func (m master) Del(owner s3intf.Owner, bucket, object string) error {
 		return errors.New("cannot find bucket " + bucket)
 	}
 
-	b.db.BeginTransaction()
-	val, err := b.db.Extract(nil, []byte(object))
-	if err != nil {
-		b.db.Rollback()
-		return fmt.Errorf("cannot get %s object: %s", object, err)
+	if err = b.db.BeginTransaction(); err != nil {
+		return fmt.Errorf("cannot start transaction: %s", err)
+	}
+	defer func() {
+		if err != nil {
+			b.db.Rollback()
+		}
+	}()
+
+	val, e := b.db.Extract(nil, []byte(object))
+	if e != nil {
+		err = fmt.Errorf("cannot get %s object: %s", object, e)
+		return
 	}
 	if val == nil {
-		return s3intf.NotFound
+		err = s3intf.NotFound
+		return
 	}
 	vi := new(weedutils.ValInfo)
 	if err = vi.Decode(val); err != nil {
-		return fmt.Errorf("error deserializing %s: %s", val, err)
+		err = fmt.Errorf("error deserializing %s: %s", val, err)
+		return
 	}
 	if err = m.wm.Delete(vi.Fid); err != nil {
-		b.db.Rollback()
-		return err
+		return
 	}
+	err = nil
 	return b.db.Commit()
 }
