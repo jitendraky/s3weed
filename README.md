@@ -1,3 +1,5 @@
+**As #1 (https://github.com/tgulacsi/s3weed/issues/1) mentions, this is OBSOLETE, weedfs already implements an S3 API**
+
 # S3weed
 S3-like proxy for Weed-FS
 
@@ -87,7 +89,7 @@ Output:
   Some testing with [s3cmd](http://s3tools.org/s3cmd) is in
   [s3cmd-test.sh](s3cmd-test.sh)
 
-## Caveeats
+## Caveats
 I've tested with s3cmd, but that seems to implement only the DNS-named buckets
 (you set the bucket name in the server name: testbucket.s3.localhost).
 Thus you need to resolve the "bucketname".fqdn to fqdn - add
